@@ -2,6 +2,7 @@ import pLimit from "p-limit";
 import {
   LiteParseConfig,
   LiteParseInput,
+  ParsedPage,
   ParseResult,
   ScreenshotResult,
   TextItem,
@@ -160,24 +161,27 @@ export class LiteParse {
 
     log(`Loaded PDF with ${doc.numPages} pages`);
 
+    let processedPages: ParsedPage[] = [];
     try {
-      let processedPages: import("./types.js").ParsedPage[];
-
       if (this.config.experimental && this.pdfEngine instanceof LiteParseRsEngine) {
         // Rust pipeline: extract + grid projection in one shot
+        const rustStart = performance.now();
         processedPages = await this.pdfEngine.parseDocument(
           doc,
           this.config.maxPages,
           this.config.targetPages
         );
+        log(`[rust] extract + project: ${(performance.now() - rustStart).toFixed(1)}ms`);
       } else {
         // TypeScript pipeline: extract, OCR, then grid projection
+        const extractStart = performance.now();
         const pages = await this.pdfEngine.extractAllPages(
           doc,
           this.config.maxPages,
           this.config.targetPages,
           { extractImages: this.config.ocrEnabled }
         );
+        log(`[ts] extract: ${(performance.now() - extractStart).toFixed(1)}ms`);
 
         // run BEFORE grid projection
         if (this.ocrEngine) {
@@ -185,35 +189,38 @@ export class LiteParse {
         }
 
         // Process pages with complete grid projection (after OCR)
-        const processedPages = await projectPagesToGrid(pages, this.config);
-
-        // Build bounding boxes if enabled
-        if (this.config.preciseBoundingBox) {
-          for (const page of processedPages) {
-            page.boundingBoxes = buildBoundingBoxes(page.textItems);
-          }
-        }
-
-        // Build final text
-        const fullText = processedPages.map((p) => p.text).join("\n\n");
-
-        const result: ParseResult = {
-          pages: processedPages,
-          text: fullText,
-        };
-
-        // Format based on output format
-        switch (this.config.outputFormat) {
-          case "json":
-            result.json = JSON.parse(formatJSON(result));
-            break;
-          case "text":
-            // Already in text format
-            break;
-        }
-
-        return result;
+        const projectStart = performance.now();
+        processedPages = await projectPagesToGrid(pages, this.config);
+        log(`[ts] project: ${(performance.now() - projectStart).toFixed(1)}ms`);
+        log(`[ts] extract + project: ${(performance.now() - extractStart).toFixed(1)}ms`);
       }
+      
+      // Build bounding boxes if enabled
+      if (this.config.preciseBoundingBox) {
+        for (const page of processedPages) {
+          page.boundingBoxes = buildBoundingBoxes(page.textItems);
+        }
+      }
+
+      // Build final text
+      const fullText = processedPages.map((p) => p.text).join("\n\n");
+
+      const result: ParseResult = {
+        pages: processedPages,
+        text: fullText,
+      };
+
+      // Format based on output format
+      switch (this.config.outputFormat) {
+        case "json":
+          result.json = JSON.parse(formatJSON(result));
+          break;
+        case "text":
+          // Already in text format
+          break;
+      }
+
+      return result;
     } finally {
       // Always release resources, even if processing throws
       await this.pdfEngine.close(doc);

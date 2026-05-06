@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::types::*;
 
@@ -645,7 +644,54 @@ fn form_lines(
         i += 1;
     }
 
+    // Insert blank lines for vertical gaps between lines.
+    // Uses the same approach as TS: if the gap between two lines exceeds
+    // a reference height, insert proportional blank lines.
+    let mut i = 1;
+    while i < lines.len() {
+        let prev_metrics = representative_line_metrics(&lines[i - 1], median_height);
+        let cur_metrics = representative_line_metrics(&lines[i], median_height);
+        let y_delta = cur_metrics.0 - prev_metrics.1; // cur_top - prev_bottom
+        let reference_height = median_height.max(prev_metrics.2.min(cur_metrics.2));
+
+        if y_delta > reference_height {
+            let num_blank = ((y_delta / reference_height).round() as usize).saturating_sub(1);
+            let to_insert = num_blank.clamp(1, 10);
+            for _ in 0..to_insert {
+                lines.insert(i, Vec::new());
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+
     lines
+}
+
+/// Returns (top, bottom, height) for representative items in a line,
+/// filtering out items much shorter than median height.
+fn representative_line_metrics(
+    line: &[ProjectedTextItem],
+    global_median_height: f32,
+) -> (f32, f32, f32) {
+    if line.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+
+    let min_representative = global_median_height * 0.5;
+    let has_representative = line.iter().any(|b| b.item.height >= min_representative);
+
+    let top = line
+        .iter()
+        .filter(|b| !has_representative || b.item.height >= min_representative)
+        .map(|b| b.item.y)
+        .fold(f32::INFINITY, f32::min);
+    let bottom = line
+        .iter()
+        .filter(|b| !has_representative || b.item.height >= min_representative)
+        .map(|b| b.item.y + b.item.height)
+        .fold(f32::NEG_INFINITY, f32::max);
+    (top, bottom, bottom - top)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -838,7 +884,13 @@ fn project_to_grid(page: &Page, mut projection_boxes: Vec<ProjectedTextItem>) ->
         });
     }
 
-    // Step 1b: Compute median distances
+    // Step 1b: Round dimensions (matching TS buildBbox Math.round on w/h)
+    for item in projection_boxes.iter_mut() {
+        item.item.width = item.item.width.round();
+        item.item.height = item.item.height.round();
+    }
+
+    // Step 1c: Compute median distances
     let (median_width, median_height) = compute_median_textbox_size(&projection_boxes);
 
     // Step 1c: Handle reading order rotations
@@ -854,36 +906,6 @@ fn project_to_grid(page: &Page, mut projection_boxes: Vec<ProjectedTextItem>) ->
         .iter()
         .map(|line| vec![BoxMeta::default(); line.len()])
         .collect();
-
-    // Compute spacing hints between neighboring boxes, similar to TS shouldSpace.
-    for line_idx in 0..lines.len() {
-        for box_idx in 0..lines[line_idx].len() {
-            if box_idx == 0 {
-                meta[line_idx][box_idx].should_space = 0;
-                continue;
-            }
-            let prev = &lines[line_idx][box_idx - 1].item;
-            let cur = &lines[line_idx][box_idx].item;
-            let x_delta = cur.x - (prev.x + prev.width);
-
-            let mut should_space = 0usize;
-            if x_delta > 2.0 {
-                should_space = 1;
-                let prev_len = prev.text.chars().count().max(1) as f32;
-                let prev_char_width = (prev.width / prev_len).max(0.1);
-                if x_delta > prev_char_width * 2.0 {
-                    let column_gap_threshold = page.page_width * 0.1;
-                    let same_column = x_delta < column_gap_threshold;
-                    if x_delta > prev_char_width * 8.0 {
-                        should_space = if same_column { FLOATING_SPACES } else { COLUMN_SPACES };
-                    } else {
-                        should_space = if same_column { 1 } else { FLOATING_SPACES };
-                    }
-                }
-            }
-            meta[line_idx][box_idx].should_space = should_space;
-        }
-    }
 
     // Anchor extraction
     let mut anchor_left: HashMap<i32, Vec<(usize, usize)>> = HashMap::new();
@@ -955,6 +977,48 @@ fn project_to_grid(page: &Page, mut projection_boxes: Vec<ProjectedTextItem>) ->
                 SnapKind::Center
             };
             meta[line_idx][box_idx].snap = Some(kind);
+        }
+    }
+
+    // Compute spacing hints between neighboring boxes (after snaps are assigned).
+    for line_idx in 0..lines.len() {
+        for box_idx in 0..lines[line_idx].len() {
+            if box_idx == 0 {
+                meta[line_idx][box_idx].should_space = 0;
+                continue;
+            }
+            let prev = &lines[line_idx][box_idx - 1].item;
+            let cur = &lines[line_idx][box_idx].item;
+            let x_delta = cur.x - (prev.x + prev.width);
+
+            let mut should_space = 0usize;
+            if x_delta > 2.0 {
+                should_space = 1;
+                let prev_len = prev.text.chars().count().max(1) as f32;
+                let prev_char_width = (prev.width / prev_len).max(0.1);
+                if x_delta > prev_char_width * 2.0 {
+                    let column_gap_threshold = page.page_width * 0.1;
+                    let same_column = x_delta < column_gap_threshold;
+
+                    let cur_snap = meta[line_idx][box_idx].snap;
+                    let prev_snap = meta[line_idx][box_idx - 1].snap;
+                    let cur_is_left_snap = cur_snap == Some(SnapKind::Left);
+                    let prev_is_right_snap = prev_snap == Some(SnapKind::Right);
+                    let both_snapped = cur_snap.is_some() && prev_snap.is_some();
+                    let force_unsnapped = meta[line_idx][box_idx].force_unsnapped;
+
+                    if (!force_unsnapped && x_delta > prev_char_width * 8.0)
+                        || cur_is_left_snap
+                        || prev_is_right_snap
+                        || both_snapped
+                    {
+                        should_space = if same_column { FLOATING_SPACES } else { COLUMN_SPACES };
+                    } else {
+                        should_space = if same_column { 1 } else { FLOATING_SPACES };
+                    }
+                }
+            }
+            meta[line_idx][box_idx].should_space = should_space;
         }
     }
 

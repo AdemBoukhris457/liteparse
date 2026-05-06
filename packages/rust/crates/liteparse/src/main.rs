@@ -38,10 +38,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             extract::extract(&cmd.pdf_path, cmd.page_num)?;
         }
         Commands::Parse(cmd) => {
+            let t0 = std::time::Instant::now();
             let pages = extract::extract_pages(&cmd.pdf_path, cmd.page_num)?;
+            let t1 = std::time::Instant::now();
             let parsed_pages = projection::project_pages_to_grid(pages);
-            // Output all parsed pages as a single JSON array
-            println!("{}", serde_json::to_string(&parsed_pages)?);
+            let t2 = std::time::Instant::now();
+            let json = serde_json::to_string(&parsed_pages)?;
+            let t3 = std::time::Instant::now();
+            println!("{}", json);
+            eprintln!(
+                "[rust-bin] extract: {:.1}ms, project: {:.1}ms, serialize: {:.1}ms, total: {:.1}ms",
+                t1.duration_since(t0).as_secs_f64() * 1000.0,
+                t2.duration_since(t1).as_secs_f64() * 1000.0,
+                t3.duration_since(t2).as_secs_f64() * 1000.0,
+                t3.duration_since(t0).as_secs_f64() * 1000.0,
+            );
         }
     }
 

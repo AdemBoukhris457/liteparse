@@ -238,26 +238,19 @@ export class LiteParseRsEngine implements PdfEngine {
 
   /** Convert Rust CLI parsed page output to ParsedPage format */
   private convertParsedPage(raw: RustParsedPageOutput): ParsedPage {
-    const pageHeight = raw.page_height;
-
-    const textItems: TextItem[] = raw.text_items.map((item) => {
-      // pdfium uses bottom-left origin; LiteParse expects top-left origin.
-      // Convert: y_top = page_height - y_bottom - item_height
-      const y = pageHeight - item.y - item.height;
-
-      return {
-        str: item.text,
-        x: item.x,
-        y,
-        width: item.width,
-        height: item.height,
-        w: item.width,
-        h: item.height,
-        fontName: item.font_name ?? undefined,
-        fontSize: item.font_size ?? undefined,
-        r: item.rotation,
-      };
-    });
+    // Rust extraction already converts to top-left origin
+    const textItems: TextItem[] = raw.text_items.map((item) => ({
+      str: item.text,
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+      w: item.width,
+      h: item.height,
+      fontName: item.font_name ?? undefined,
+      fontSize: item.font_size ?? undefined,
+      r: item.rotation,
+    }));
 
     return {
       pageNum: raw.page_number,
@@ -273,24 +266,19 @@ export class LiteParseRsEngine implements PdfEngine {
     const pageWidth = raw.page_width;
     const pageHeight = raw.page_height;
 
-    const textItems: TextItem[] = raw.text_items.map((item) => {
-      // pdfium uses bottom-left origin; LiteParse expects top-left origin.
-      // Convert: y_top = page_height - y_bottom - item_height
-      const y = pageHeight - item.y - item.height;
-
-      return {
-        str: item.text,
-        x: item.x,
-        y,
-        width: item.width,
-        height: item.height,
-        w: item.width,
-        h: item.height,
-        fontName: item.font_name ?? undefined,
-        fontSize: item.font_size ?? undefined,
-        r: item.rotation,
-      };
-    });
+    // Rust extraction already converts to top-left origin
+    const textItems: TextItem[] = raw.text_items.map((item) => ({
+      str: item.text,
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+      w: item.width,
+      h: item.height,
+      fontName: item.font_name ?? undefined,
+      fontSize: item.font_size ?? undefined,
+      r: item.rotation,
+    }));
 
     const images: Image[] = [];
 
