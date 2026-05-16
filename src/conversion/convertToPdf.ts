@@ -81,6 +81,78 @@ export const imageExtensions = [
 
 export const htmlExtensions = [".htm", ".html", ".xhtml"];
 
+/** Plain-text formats allowed to bypass PDF conversion */
+export const textPassthroughExtensions = [
+  ".txt",
+  ".text",
+  ".md",
+  ".markdown",
+  ".log",
+  ".ini",
+  ".json",
+  ".xml",
+  ".yml",
+  ".yaml",
+  ...htmlExtensions,
+];
+
+/**
+ * ZIP magic identifies OOXML containers (docx/xlsx/pptx); legacy OLE uses .cfb.
+ * file-type reports these as zip/cfb rather than specific office extensions.
+ */
+export const zipContainerExtensions = [".zip"];
+export const oleOfficeExtensions = [".cfb"];
+
+function isLikelyBinaryContent(data: Buffer): boolean {
+  const sample = data.subarray(0, Math.min(data.length, 8192));
+  if (sample.length === 0) {
+    return false;
+  }
+  if (sample.includes(0)) {
+    return true;
+  }
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(sample);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+async function readTextPassthrough(
+  filePath: string
+): Promise<ConversionPassthrough | ConversionError> {
+  const data = await fs.readFile(filePath);
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+  if (isLikelyBinaryContent(buffer)) {
+    return {
+      message:
+        "Unsupported binary format. Pass a file path with the correct extension, or provide a supported document type.",
+      code: "UNSUPPORTED_FORMAT",
+    };
+  }
+  return { content: buffer.toString("utf-8") };
+}
+
+function needsBinaryConversion(extension: string): boolean {
+  return (
+    officeExtensions.includes(extension) ||
+    spreadsheetExtensions.includes(extension) ||
+    imageExtensions.includes(extension) ||
+    zipContainerExtensions.includes(extension) ||
+    oleOfficeExtensions.includes(extension)
+  );
+}
+
+function usesOfficeConverter(extension: string): boolean {
+  return (
+    officeExtensions.includes(extension) ||
+    spreadsheetExtensions.includes(extension) ||
+    zipContainerExtensions.includes(extension) ||
+    oleOfficeExtensions.includes(extension)
+  );
+}
+
 /**
  * Guess file extension from file content using file-type magic byte detection.
  * Returns the path's own extension if present, otherwise inspects file bytes.
@@ -434,28 +506,15 @@ export async function convertToPdf(
       };
     }
 
-    // Unknown format or text-based — pass through as text
-    if (!extension) {
-      const content = await fs.readFile(filePath, "utf-8");
-      return { content };
+    if (!extension || !needsBinaryConversion(extension)) {
+      return readTextPassthrough(filePath);
     }
 
-    // Create temp directory for output
     const tmpDir = await fs.mkdtemp(path.join(getTmpDir(), "liteparse-"));
 
-    // Convert based on file type
-    let pdfPath: string;
-
-    if (officeExtensions.includes(extension)) {
-      pdfPath = await convertOfficeDocument(filePath, tmpDir, password);
-    } else if (spreadsheetExtensions.includes(extension)) {
-      pdfPath = await convertOfficeDocument(filePath, tmpDir, password);
-    } else if (imageExtensions.includes(extension)) {
-      pdfPath = await convertImageToPdf(filePath, tmpDir);
-    } else {
-      const content = await fs.readFile(filePath, "utf-8");
-      return { content };
-    }
+    const pdfPath = usesOfficeConverter(extension)
+      ? await convertOfficeDocument(filePath, tmpDir, password)
+      : await convertImageToPdf(filePath, tmpDir);
 
     return {
       pdfPath,
@@ -469,19 +528,21 @@ export async function convertToPdf(
   }
 }
 
-/**
- * Clean up temporary conversion files
- */
-export async function cleanupConversionFiles(pdfPath: string): Promise<void> {
+async function removeTempDirectory(dir: string): Promise<void> {
   try {
-    // Only delete if in temp directory
-    if (pdfPath.includes(getTmpDir())) {
-      const dir = path.dirname(pdfPath);
+    if (dir.includes(getTmpDir())) {
       await fs.rm(dir, { recursive: true, force: true });
     }
   } catch {
     // Ignore cleanup errors
   }
+}
+
+/**
+ * Clean up temporary conversion files
+ */
+export async function cleanupConversionFiles(pdfPath: string): Promise<void> {
+  await removeTempDirectory(path.dirname(pdfPath));
 }
 
 /**
@@ -505,10 +566,12 @@ export async function convertBufferToPdf(
 ): Promise<ConversionResult | ConversionPassthrough | ConversionError> {
   const ext = await guessExtensionFromBuffer(data);
 
-  // Write buffer to temp file with detected extension (use .bin for unknown)
   const tmpDir = await fs.mkdtemp(path.join(getTmpDir(), "liteparse-"));
-  const tmpPath = path.join(tmpDir, `input${ext || ".bin"}`);
-  await fs.writeFile(tmpPath, data);
-
-  return convertToPdf(tmpPath, password);
+  try {
+    const tmpPath = path.join(tmpDir, `input${ext || ".bin"}`);
+    await fs.writeFile(tmpPath, data);
+    return await convertToPdf(tmpPath, password);
+  } finally {
+    await removeTempDirectory(tmpDir);
+  }
 }
