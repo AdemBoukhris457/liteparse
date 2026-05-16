@@ -48,6 +48,10 @@ export interface PageData {
   annotations?: Annotation[];
   /** Bounding boxes of garbled text that was filtered out (for targeted OCR) */
   garbledTextRegions?: BoundingBox[];
+  /** Set when OCR was required for this page but failed. */
+  ocrFailed?: boolean;
+  /** Error message when {@link ocrFailed} is true. */
+  ocrError?: string;
 }
 
 export interface Path {

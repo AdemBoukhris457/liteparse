@@ -140,6 +140,15 @@ export interface LiteParseConfig {
   password?: string;
 
   /**
+   * When `true`, {@link LiteParse.parse} throws if OCR fails on any page that required it.
+   * When `false` (default), parsing completes and failed pages are marked with
+   * {@link ParsedPage.ocrFailed} and listed in {@link ParseResult.ocrWarnings}.
+   *
+   * @defaultValue `false`
+   */
+  failOnOcrError: boolean;
+
+  /**
    * Debug configuration for grid projection. When enabled, logs detailed
    * information about how text elements are snapped, anchored, and projected.
    * Can also generate visual PNG overlays of the projection.
@@ -308,6 +317,23 @@ export interface ParsedPage {
    * Present when {@link LiteParseConfig.preciseBoundingBox} is enabled.
    */
   boundingBoxes?: BoundingBox[];
+  /**
+   * `true` when OCR was required for this page but failed. Parsing still succeeds unless
+   * {@link LiteParseConfig.failOnOcrError} is enabled.
+   */
+  ocrFailed?: boolean;
+  /** Error message when {@link ocrFailed} is `true`. */
+  ocrError?: string;
+}
+
+/**
+ * Summary of an OCR failure on a specific page.
+ */
+export interface OcrWarning {
+  /** 1-indexed page number. */
+  page: number;
+  /** Human-readable failure reason. */
+  message: string;
 }
 
 /**
@@ -367,7 +393,13 @@ export interface ParseResultJson {
      * @deprecated Use `textItems` coordinates instead. Will be removed in v2.0.
      */
     boundingBoxes: BoundingBox[];
+    /** Present when OCR was required for this page but failed. */
+    ocrFailed?: boolean;
+    /** Error message when `ocrFailed` is `true`. */
+    ocrError?: string;
   }>;
+  /** OCR failures across the document. Omitted when there are no failures. */
+  ocrWarnings?: OcrWarning[];
 }
 
 /**
@@ -380,6 +412,11 @@ export interface ParseResult {
   text: string;
   /** Structured JSON data. Present when {@link LiteParseConfig.outputFormat} is `"json"`. */
   json?: ParseResultJson;
+  /**
+   * OCR failures by page. Present when OCR was required but failed and
+   * {@link LiteParseConfig.failOnOcrError} is `false`.
+   */
+  ocrWarnings?: OcrWarning[];
 }
 
 /**
