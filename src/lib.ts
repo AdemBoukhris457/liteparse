@@ -27,5 +27,7 @@ export type {
   SearchItemsOptions,
   ScreenshotResult,
   MarkupData,
+  OcrWarning,
 } from "./core/types.js";
+export { OcrRecognitionError, OcrProcessingError } from "./engines/ocr/errors.js";
 export type { GridDebugConfig } from "./processing/gridDebugLogger.js";
