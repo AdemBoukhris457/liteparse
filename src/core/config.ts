@@ -5,6 +5,7 @@ export const DEFAULT_CONFIG: LiteParseConfig = {
   // If ocrServerUrl is provided, uses HTTP OCR instead
   ocrLanguage: "en",
   ocrEnabled: true,
+  ocrScope: "selective",
   ocrServerUrl: undefined, // If set, uses HTTP OCR; otherwise uses Tesseract
   numWorkers: 4, // Number of pages to OCR in parallel
 

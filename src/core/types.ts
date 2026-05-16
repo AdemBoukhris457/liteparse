@@ -9,6 +9,15 @@ import type { GridDebugConfig } from "../processing/gridDebugLogger.js";
 export type OutputFormat = "json" | "text";
 
 /**
+ * Controls how OCR is applied per page.
+ *
+ * - `"selective"` — Full-page OCR only on text-sparse pages; embedded images on
+ *   text-heavy pages are OCR'd by region. Matches documented selective OCR behavior.
+ * - `"full"` — Legacy behavior: any embedded image triggers full-page OCR.
+ */
+export type OcrScope = "selective" | "full";
+
+/**
  * Accepted input types for {@link LiteParse.parse} and {@link LiteParse.screenshot}.
  *
  * - `string` — A file path to a document on disk.
@@ -44,11 +53,18 @@ export interface LiteParseConfig {
 
   /**
    * Whether to run OCR on pages with little or no native text.
-   * When enabled, LiteParse selectively OCRs only images and text-sparse regions.
+   * When enabled, LiteParse selectively OCRs embedded image regions and text-sparse pages.
    *
    * @defaultValue `true`
    */
   ocrEnabled: boolean;
+
+  /**
+   * How OCR is scoped per page. See {@link OcrScope}.
+   *
+   * @defaultValue `"selective"`
+   */
+  ocrScope: OcrScope;
 
   /**
    * URL of an HTTP OCR server implementing the LiteParse OCR API.
