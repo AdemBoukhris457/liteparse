@@ -15,6 +15,8 @@ export function buildTextPassthroughPages(content: string): ParsedPage[] {
     y: 0,
     width: TEXT_PASSTHROUGH_PAGE_WIDTH,
     height: TEXT_PASSTHROUGH_PAGE_HEIGHT,
+    w: TEXT_PASSTHROUGH_PAGE_WIDTH,
+    h: TEXT_PASSTHROUGH_PAGE_HEIGHT,
     fontName: "Text",
     fontSize: 12,
     confidence: 1.0,
