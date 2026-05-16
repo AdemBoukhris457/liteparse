@@ -59,6 +59,8 @@ export class LiteParse {
   private config: LiteParseConfig;
   private pdfEngine: PdfEngine;
   private ocrEngine?: OcrEngine;
+  /** Ensures only one parse/screenshot uses shared engines at a time */
+  private operationLock: Promise<void> = Promise.resolve();
 
   /**
    * Create a new LiteParse instance.
@@ -84,10 +86,24 @@ export class LiteParse {
   }
 
   /**
+   * Run an operation exclusively — concurrent `parse()` / `screenshot()` calls are queued.
+   */
+  private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.operationLock.then(operation);
+    this.operationLock = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
+  }
+
+  /**
    * Parse a document and return the extracted text, page data, and optionally structured JSON.
    *
    * Supports PDFs natively. Non-PDF formats (DOCX, XLSX, images, etc.) are automatically
    * converted to PDF before parsing if the required system tools are installed.
+   *
+   * Concurrent calls on the same instance are serialized so shared PDF/OCR engines stay consistent.
    *
    * @param input - A file path, `Buffer`, or `Uint8Array` containing document bytes.
    *   When given raw bytes, PDF data is parsed directly with zero disk I/O.
@@ -98,6 +114,10 @@ export class LiteParse {
    * @throws Error if the file cannot be found, converted, or parsed.
    */
   async parse(input: LiteParseInput, quiet = false): Promise<ParseResult> {
+    return this.runExclusive(() => this.parseDocument(input, quiet));
+  }
+
+  private async parseDocument(input: LiteParseInput, quiet: boolean): Promise<ParseResult> {
     const log = (msg: string) => {
       if (!quiet) console.error(msg); // Progress goes to stderr
     };
@@ -231,11 +251,21 @@ export class LiteParse {
    *
    * @throws Error if the input is a text-based format that cannot be rendered.
    * @throws Error if the file cannot be found, converted, or rendered.
+   *
+   * Concurrent calls on the same instance are serialized so shared PDF engines stay consistent.
    */
   async screenshot(
     input: LiteParseInput,
     pageNumbers?: number[],
     quiet = false
+  ): Promise<ScreenshotResult[]> {
+    return this.runExclusive(() => this.screenshotDocument(input, pageNumbers, quiet));
+  }
+
+  private async screenshotDocument(
+    input: LiteParseInput,
+    pageNumbers: number[] | undefined,
+    quiet: boolean
   ): Promise<ScreenshotResult[]> {
     const log = (msg: string) => {
       if (!quiet) console.error(msg); // Progress goes to stderr
