@@ -3,7 +3,10 @@ import { ParseResult, ParsedPage, ParseResultJson } from "../core/types.js";
 /**
  * Build JSON output from parsed pages
  */
-export function buildJSON(pages: ParsedPage[], ocrWarnings?: ParseResultJson["ocrWarnings"]): ParseResultJson {
+export function buildJSON(
+  pages: ParsedPage[],
+  ocrWarnings?: ParseResultJson["ocrWarnings"]
+): ParseResultJson {
   const json: ParseResultJson = {
     pages: pages.map((page) => ({
       page: page.pageNum,

@@ -85,12 +85,16 @@ describe("LiteParse OCR failures", () => {
   });
 
   it("records ocrFailed and ocrWarnings when OCR fails (default)", async () => {
-    recognize.mockRejectedValueOnce(new OcrRecognitionError("Tesseract OCR failed for <buffer>: boom"));
+    recognize.mockRejectedValueOnce(
+      new OcrRecognitionError("Tesseract OCR failed for <buffer>: boom")
+    );
 
     const parser = new LiteParse({ ocrEnabled: true, outputFormat: "text" });
     const result = await parser.parse("scan.pdf");
 
-    expect(result.ocrWarnings).toEqual([{ page: 1, message: "Tesseract OCR failed for <buffer>: boom" }]);
+    expect(result.ocrWarnings).toEqual([
+      { page: 1, message: "Tesseract OCR failed for <buffer>: boom" },
+    ]);
     expect(result.pages[0]?.ocrFailed).toBe(true);
     expect(result.pages[0]?.ocrError).toContain("boom");
   });

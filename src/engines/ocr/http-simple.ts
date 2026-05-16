@@ -71,9 +71,12 @@ export class HttpOcrEngine implements OcrEngine {
           (error.response?.data as { error?: string } | undefined)?.error || error.message;
         const status = error.response?.status;
         const statusPart = status !== undefined ? ` (HTTP ${status})` : "";
-        throw new OcrRecognitionError(`OCR HTTP request failed for ${label}${statusPart}: ${detail}`, {
-          cause: error,
-        });
+        throw new OcrRecognitionError(
+          `OCR HTTP request failed for ${label}${statusPart}: ${detail}`,
+          {
+            cause: error,
+          }
+        );
       }
       const message = error instanceof Error ? error.message : String(error);
       throw new OcrRecognitionError(`OCR failed for ${label}: ${message}`, { cause: error });

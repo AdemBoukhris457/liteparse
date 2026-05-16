@@ -365,7 +365,9 @@ export class LiteParse {
     }
   }
 
-  private collectOcrWarnings(pages: { pageNum: number; ocrFailed?: boolean; ocrError?: string }[]): OcrWarning[] {
+  private collectOcrWarnings(
+    pages: { pageNum: number; ocrFailed?: boolean; ocrError?: string }[]
+  ): OcrWarning[] {
     return pages
       .filter((page) => page.ocrFailed)
       .map((page) => ({
