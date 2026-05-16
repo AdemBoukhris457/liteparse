@@ -345,6 +345,8 @@ const {
 
 import { LiteParse } from "./parser";
 import { LiteParseConfig, ScreenshotResult } from "./types";
+import { PdfJsEngine } from "../engines/pdf/pdfjs.js";
+import { projectPagesToGrid } from "../processing/grid.js";
 
 vi.mock("../conversion/convertToPdf.js", async () => {
   const actual = await vi.importActual<typeof import("../conversion/convertToPdf.js")>(
@@ -616,5 +618,35 @@ describe("test screenshot", () => {
       mockScreenshotResults[2],
       mockScreenshotResults[3],
     ]);
+  });
+});
+
+describe("concurrent operations", () => {
+  it("serializes overlapping parse() calls on one instance", async () => {
+    let active = 0;
+    let maxActive = 0;
+
+    vi.mocked(projectPagesToGrid).mockReset();
+    vi.mocked(projectPagesToGrid).mockResolvedValue(structuredClone(mockParsedPages));
+
+    vi.mocked(PdfJsEngine).mockImplementationOnce(
+      class {
+        loadDocument = vi.fn(async () => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          active -= 1;
+          return mockPdfDocument;
+        });
+        extractAllPages = vi.fn().mockResolvedValue(mockPages);
+        extractPage = vi.fn().mockResolvedValue(mockPages[0]);
+        renderPageImage = vi.fn();
+        close = vi.fn();
+      } as unknown as typeof PdfJsEngine
+    );
+
+    const parser = new LiteParse({ ocrEnabled: false, outputFormat: "text" });
+    await Promise.all([parser.parse("/tmp/a.pdf"), parser.parse("/tmp/b.pdf")]);
+    expect(maxActive).toBe(1);
   });
 });
