@@ -15,7 +15,7 @@ import { TesseractEngine } from "../engines/ocr/tesseract.js";
 import { HttpOcrEngine } from "../engines/ocr/http-simple.js";
 import { projectPagesToGrid } from "../processing/grid.js";
 import { buildBoundingBoxes } from "../processing/bbox.js";
-import { formatJSON } from "../output/json.js";
+import { buildJSON } from "../output/json.js";
 import {
   convertToPdf,
   convertBufferToPdf,
@@ -192,7 +192,7 @@ export class LiteParse {
       // Format based on output format
       switch (this.config.outputFormat) {
         case "json":
-          result.json = JSON.parse(formatJSON(result));
+          result.json = buildJSON(result.pages);
           break;
         case "text":
           // Already in text format
