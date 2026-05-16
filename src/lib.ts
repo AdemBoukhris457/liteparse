@@ -18,6 +18,7 @@ export type {
   LiteParseConfig,
   LiteParseInput,
   OutputFormat,
+  OcrScope,
   ParseResult,
   ParseResultJson,
   ParsedPage,
