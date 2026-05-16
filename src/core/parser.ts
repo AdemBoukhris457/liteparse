@@ -23,6 +23,8 @@ import {
   guessExtensionFromBuffer,
 } from "../conversion/convertToPdf.js";
 import { cleanOcrTableArtifacts } from "../processing/textUtils.js";
+import { OcrProcessingError } from "../engines/ocr/errors.js";
+import type { OcrWarning } from "./types.js";
 
 /**
  * Main document parser class. Handles PDF parsing, OCR, format conversion,
@@ -184,9 +186,12 @@ export class LiteParse {
       // Build final text
       const fullText = processedPages.map((p) => p.text).join("\n\n");
 
+      const ocrWarnings = this.collectOcrWarnings(processedPages);
+
       const result: ParseResult = {
         pages: processedPages,
         text: fullText,
+        ...(ocrWarnings.length > 0 ? { ocrWarnings } : {}),
       };
 
       // Format based on output format
@@ -348,6 +353,25 @@ export class LiteParse {
     const limit = pLimit(this.config.numWorkers);
 
     await Promise.all(pages.map((page) => limit(() => this.processPageOcr(doc, page, log))));
+
+    const failedPages = pages.filter((page) => page.ocrFailed);
+    if (this.config.failOnOcrError && failedPages.length > 0) {
+      throw new OcrProcessingError(
+        failedPages.map((page) => ({
+          page: page.pageNum,
+          message: page.ocrError ?? "OCR failed",
+        }))
+      );
+    }
+  }
+
+  private collectOcrWarnings(pages: { pageNum: number; ocrFailed?: boolean; ocrError?: string }[]): OcrWarning[] {
+    return pages
+      .filter((page) => page.ocrFailed)
+      .map((page) => ({
+        page: page.pageNum,
+        message: page.ocrError ?? "OCR failed",
+      }));
   }
 
   /**
@@ -480,7 +504,10 @@ export class LiteParse {
         log(`  Found ${ocrTextItems.length} text items from OCR on page ${page.pageNum}`);
       }
     } catch (error) {
-      log(`  OCR failed for page ${page.pageNum}: ${error}`);
+      const message = error instanceof Error ? error.message : String(error);
+      page.ocrFailed = true;
+      page.ocrError = message;
+      log(`  OCR failed for page ${page.pageNum}: ${message}`);
     }
   }
 
