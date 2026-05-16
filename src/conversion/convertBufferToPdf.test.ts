@@ -27,7 +27,9 @@ describe("convertBufferToPdf temp cleanup", () => {
 
   async function listLiteparseDirs(): Promise<string[]> {
     const entries = await fs.readdir(testTmpRoot, { withFileTypes: true });
-    return entries.filter((e) => e.isDirectory() && e.name.startsWith("liteparse-")).map((e) => e.name);
+    return entries
+      .filter((e) => e.isDirectory() && e.name.startsWith("liteparse-"))
+      .map((e) => e.name);
   }
 
   it("removes staging temp dir on text passthrough", async () => {
