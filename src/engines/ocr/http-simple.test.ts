@@ -64,20 +64,23 @@ describe("test OCR simple HTTP server (single image)", () => {
 
   it("test server axios error", async () => {
     const server = new HttpOcrEngine("http://localhost:9999");
-    const result = await server.recognize("cat.png", { language: "en" });
-    expect(result.length).toBe(0);
+    await expect(server.recognize("cat.png", { language: "en" })).rejects.toThrow(
+      "OCR HTTP request failed"
+    );
   });
 
   it("test server generic error", async () => {
     const server = new HttpOcrEngine("http://localhost:10000");
-    const result = await server.recognize("cat.png", { language: "en" });
-    expect(result.length).toBe(0);
+    await expect(server.recognize("cat.png", { language: "en" })).rejects.toThrow(
+      "OCR failed for cat.png"
+    );
   });
 
   it("test server malformed response", async () => {
     const server = new HttpOcrEngine("http://localhost:9998");
-    const result = await server.recognize("cat.png", { language: "en" });
-    expect(result.length).toBe(0);
+    await expect(server.recognize("cat.png", { language: "en" })).rejects.toThrow(
+      "OCR server response missing results array"
+    );
   });
 });
 
@@ -90,28 +93,22 @@ describe("test OCR simple HTTP server (batch)", () => {
 
   it("test server axios error", async () => {
     const server = new HttpOcrEngine("http://localhost:9999");
-    const result = await server.recognizeBatch(["cat.png", "dog.png"], { language: "en" });
-    expect(result.length).toBe(2);
-    for (const r of result) {
-      expect(r.length).toBe(0);
-    }
+    await expect(server.recognizeBatch(["cat.png", "dog.png"], { language: "en" })).rejects.toThrow(
+      "OCR HTTP request failed"
+    );
   });
 
   it("test server generic error", async () => {
     const server = new HttpOcrEngine("http://localhost:10000");
-    const result = await server.recognizeBatch(["cat.png", "dog.png"], { language: "en" });
-    expect(result.length).toBe(2);
-    for (const r of result) {
-      expect(r.length).toBe(0);
-    }
+    await expect(server.recognizeBatch(["cat.png", "dog.png"], { language: "en" })).rejects.toThrow(
+      "OCR failed for cat.png"
+    );
   });
 
   it("test server malformed response", async () => {
     const server = new HttpOcrEngine("http://localhost:9998");
-    const result = await server.recognizeBatch(["cat.png", "dog.png"], { language: "en" });
-    expect(result.length).toBe(2);
-    for (const r of result) {
-      expect(r.length).toBe(0);
-    }
+    await expect(server.recognizeBatch(["cat.png", "dog.png"], { language: "en" })).rejects.toThrow(
+      "OCR server response missing results array"
+    );
   });
 });

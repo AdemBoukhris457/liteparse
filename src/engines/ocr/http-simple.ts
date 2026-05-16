@@ -2,6 +2,7 @@ import axios from "axios";
 import FormData from "form-data";
 import fs from "fs";
 import { OcrEngine, OcrOptions, OcrResult } from "./interface.js";
+import { OcrRecognitionError } from "./errors.js";
 
 interface HttpOcrResponseItem {
   text: string;
@@ -50,8 +51,9 @@ export class HttpOcrEngine implements OcrEngine {
       const { results } = response.data;
 
       if (!Array.isArray(results)) {
-        console.warn("OCR server response missing results array:", response.data);
-        return [];
+        throw new OcrRecognitionError(
+          `OCR server response missing results array for ${typeof image === "string" ? image : "<buffer>"}`
+        );
       }
 
       return results.map((item: HttpOcrResponseItem) => ({
@@ -60,17 +62,21 @@ export class HttpOcrEngine implements OcrEngine {
         confidence: item.confidence,
       }));
     } catch (error) {
+      if (error instanceof OcrRecognitionError) {
+        throw error;
+      }
       const label = typeof image === "string" ? image : "<buffer>";
       if (axios.isAxiosError(error)) {
-        console.error(
-          `OCR HTTP error for ${label}:`,
-          error.response?.status,
-          error.response?.data?.error || error.message
-        );
-      } else {
-        console.error(`OCR error for ${label}:`, error);
+        const detail =
+          (error.response?.data as { error?: string } | undefined)?.error || error.message;
+        const status = error.response?.status;
+        const statusPart = status !== undefined ? ` (HTTP ${status})` : "";
+        throw new OcrRecognitionError(`OCR HTTP request failed for ${label}${statusPart}: ${detail}`, {
+          cause: error,
+        });
       }
-      return [];
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OcrRecognitionError(`OCR failed for ${label}: ${message}`, { cause: error });
     }
   }
 

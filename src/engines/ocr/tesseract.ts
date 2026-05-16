@@ -1,5 +1,6 @@
 import { createWorker, createScheduler, Scheduler, Worker } from "tesseract.js";
 import { OcrEngine, OcrOptions, OcrResult } from "./interface.js";
+import { OcrRecognitionError } from "./errors.js";
 
 export class TesseractEngine implements OcrEngine {
   name = "tesseract";
@@ -151,8 +152,10 @@ export class TesseractEngine implements OcrEngine {
       return results.filter((r) => r.confidence > 0.3);
     } catch (error) {
       const label = typeof image === "string" ? image : "<buffer>";
-      console.error(`\nTesseract OCR error for ${label}:`, error);
-      return [];
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OcrRecognitionError(`Tesseract OCR failed for ${label}: ${message}`, {
+        cause: error,
+      });
     }
   }
 
