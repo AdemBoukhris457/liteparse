@@ -2227,6 +2227,8 @@ export async function projectPagesToGrid(
       text,
       textItems: page.textItems,
       boundingBoxes: [],
+      ...(page.ocrFailed !== undefined ? { ocrFailed: page.ocrFailed } : {}),
+      ...(page.ocrError !== undefined ? { ocrError: page.ocrError } : {}),
     });
   }
 
