@@ -440,21 +440,27 @@ export async function convertToPdf(
       return { content };
     }
 
-    // Create temp directory for output
+    const needsBinaryConversion =
+      officeExtensions.includes(extension) ||
+      spreadsheetExtensions.includes(extension) ||
+      imageExtensions.includes(extension);
+
+    if (!needsBinaryConversion) {
+      const content = await fs.readFile(filePath, "utf-8");
+      return { content };
+    }
+
+    // Create temp directory for conversion output (office / spreadsheet / image only)
     const tmpDir = await fs.mkdtemp(path.join(getTmpDir(), "liteparse-"));
 
-    // Convert based on file type
     let pdfPath: string;
 
     if (officeExtensions.includes(extension)) {
       pdfPath = await convertOfficeDocument(filePath, tmpDir, password);
     } else if (spreadsheetExtensions.includes(extension)) {
       pdfPath = await convertOfficeDocument(filePath, tmpDir, password);
-    } else if (imageExtensions.includes(extension)) {
-      pdfPath = await convertImageToPdf(filePath, tmpDir);
     } else {
-      const content = await fs.readFile(filePath, "utf-8");
-      return { content };
+      pdfPath = await convertImageToPdf(filePath, tmpDir);
     }
 
     return {
@@ -470,18 +476,23 @@ export async function convertToPdf(
 }
 
 /**
- * Clean up temporary conversion files
+ * Remove a temp directory created under getTmpDir().
  */
-export async function cleanupConversionFiles(pdfPath: string): Promise<void> {
+async function removeTempDirectory(dir: string): Promise<void> {
   try {
-    // Only delete if in temp directory
-    if (pdfPath.includes(getTmpDir())) {
-      const dir = path.dirname(pdfPath);
+    if (dir.includes(getTmpDir())) {
       await fs.rm(dir, { recursive: true, force: true });
     }
   } catch {
     // Ignore cleanup errors
   }
+}
+
+/**
+ * Clean up temporary conversion files
+ */
+export async function cleanupConversionFiles(pdfPath: string): Promise<void> {
+  await removeTempDirectory(path.dirname(pdfPath));
 }
 
 /**
@@ -507,8 +518,12 @@ export async function convertBufferToPdf(
 
   // Write buffer to temp file with detected extension (use .bin for unknown)
   const tmpDir = await fs.mkdtemp(path.join(getTmpDir(), "liteparse-"));
-  const tmpPath = path.join(tmpDir, `input${ext || ".bin"}`);
-  await fs.writeFile(tmpPath, data);
-
-  return convertToPdf(tmpPath, password);
+  try {
+    const tmpPath = path.join(tmpDir, `input${ext || ".bin"}`);
+    await fs.writeFile(tmpPath, data);
+    return await convertToPdf(tmpPath, password);
+  } finally {
+    // Always remove the buffer staging dir (converted PDFs live in a separate temp dir)
+    await removeTempDirectory(tmpDir);
+  }
 }
