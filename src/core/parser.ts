@@ -102,9 +102,9 @@ export class LiteParse {
       if (!quiet) console.error(msg); // Progress goes to stderr
     };
 
-    let doc: PdfDocument;
     let needsCleanup = false;
     let cleanupPath: string | undefined;
+    let pdfToLoad: string | Uint8Array | undefined;
 
     if (typeof input === "string") {
       log(`Processing file: ${input}`);
@@ -125,18 +125,14 @@ export class LiteParse {
         cleanupPath = pdfPath;
         log(`Converted ${conversionResult.originalExtension} to PDF`);
       }
-
-      doc = await this.pdfEngine.loadDocument(pdfPath, this.config.password);
+      pdfToLoad = pdfPath;
     } else {
       log(`Processing buffer input (${input.byteLength} bytes)`);
       const ext = await guessExtensionFromBuffer(input);
 
       if (ext === ".pdf") {
-        // Zero-disk path: pass bytes directly to the PDF engine
-        const data = input instanceof Uint8Array ? input : new Uint8Array(input);
-        doc = await this.pdfEngine.loadDocument(data, this.config.password);
+        pdfToLoad = input instanceof Uint8Array ? input : new Uint8Array(input);
       } else {
-        // Non-PDF buffer: write to temp file for conversion
         const conversionResult = await convertBufferToPdf(input, this.config.password);
 
         if ("code" in conversionResult) {
@@ -151,14 +147,20 @@ export class LiteParse {
         needsCleanup = true;
         cleanupPath = conversionResult.pdfPath;
         log(`Converted ${conversionResult.originalExtension} buffer to PDF`);
-        doc = await this.pdfEngine.loadDocument(conversionResult.pdfPath, this.config.password);
+        pdfToLoad = conversionResult.pdfPath;
       }
     }
 
-    log(`Loaded PDF with ${doc.numPages} pages`);
+    let doc: PdfDocument | undefined;
+
+    if (pdfToLoad === undefined) {
+      throw new Error("No PDF input resolved for parsing");
+    }
 
     try {
-      // Extract pages
+      doc = await this.pdfEngine.loadDocument(pdfToLoad, this.config.password);
+      log(`Loaded PDF with ${doc.numPages} pages`);
+
       const pages = await this.pdfEngine.extractAllPages(
         doc,
         this.config.maxPages,
@@ -166,22 +168,18 @@ export class LiteParse {
         { extractImages: this.config.ocrEnabled }
       );
 
-      // run BEFORE grid projection
       if (this.ocrEngine) {
         await this.runOCR(doc, pages, log);
       }
 
-      // Process pages with complete grid projection (after OCR)
       const processedPages = await projectPagesToGrid(pages, this.config);
 
-      // Build bounding boxes if enabled
       if (this.config.preciseBoundingBox) {
         for (const page of processedPages) {
           page.boundingBoxes = buildBoundingBoxes(page.textItems);
         }
       }
 
-      // Build final text
       const fullText = processedPages.map((p) => p.text).join("\n\n");
 
       const result: ParseResult = {
@@ -189,20 +187,19 @@ export class LiteParse {
         text: fullText,
       };
 
-      // Format based on output format
       switch (this.config.outputFormat) {
         case "json":
           result.json = JSON.parse(formatJSON(result));
           break;
         case "text":
-          // Already in text format
           break;
       }
 
       return result;
     } finally {
-      // Always release resources, even if processing throws
-      await this.pdfEngine.close(doc);
+      if (doc) {
+        await this.pdfEngine.close(doc);
+      }
 
       if (this.ocrEngine && "terminate" in this.ocrEngine) {
         await (this.ocrEngine as TesseractEngine).terminate();
@@ -243,10 +240,9 @@ export class LiteParse {
 
     log(`Generating screenshots for: ${typeof input === "string" ? input : "<buffer>"}`);
 
-    let doc: PdfDocument;
-    let pdfInput: string | Uint8Array;
     let needsCleanup = false;
     let cleanupPath: string | undefined;
+    let pdfInput: string | Uint8Array | undefined;
 
     if (typeof input === "string") {
       const conversionResult = await convertToPdf(input, this.config.password);
@@ -265,16 +261,12 @@ export class LiteParse {
         cleanupPath = pdfPath;
         log(`Converted ${conversionResult.originalExtension} to PDF`);
       }
-
-      doc = await this.pdfEngine.loadDocument(pdfPath, this.config.password);
       pdfInput = pdfPath;
     } else {
       const ext = await guessExtensionFromBuffer(input);
 
       if (ext === ".pdf") {
-        const data = input instanceof Uint8Array ? input : new Uint8Array(input);
-        doc = await this.pdfEngine.loadDocument(data, this.config.password);
-        pdfInput = data;
+        pdfInput = input instanceof Uint8Array ? input : new Uint8Array(input);
       } else {
         const conversionResult = await convertBufferToPdf(input, this.config.password);
 
@@ -289,19 +281,25 @@ export class LiteParse {
         needsCleanup = true;
         cleanupPath = conversionResult.pdfPath;
         log(`Converted ${conversionResult.originalExtension} buffer to PDF`);
-        doc = await this.pdfEngine.loadDocument(conversionResult.pdfPath, this.config.password);
         pdfInput = conversionResult.pdfPath;
       }
     }
 
-    const totalPages = doc.numPages;
-    const results: ScreenshotResult[] = [];
-    const pages = pageNumbers || Array.from({ length: totalPages }, (_, i) => i + 1);
+    if (pdfInput === undefined) {
+      throw new Error("No PDF input resolved for screenshot");
+    }
 
+    let doc: PdfDocument | undefined;
     const renderer = new PdfiumRenderer();
-    await renderer.loadDocument(pdfInput, this.config.password);
+    const results: ScreenshotResult[] = [];
 
     try {
+      doc = await this.pdfEngine.loadDocument(pdfInput, this.config.password);
+      await renderer.loadDocument(pdfInput, this.config.password);
+
+      const totalPages = doc.numPages;
+      const pages = pageNumbers || Array.from({ length: totalPages }, (_, i) => i + 1);
+
       for (const pageNum of pages) {
         if (pageNum < 1 || pageNum > totalPages) {
           console.error(`Skipping invalid page number: ${pageNum}`);
@@ -320,17 +318,20 @@ export class LiteParse {
           imageBuffer,
         });
       }
+
+      log(`Generated ${results.length} screenshots`);
+      return results;
     } finally {
       await renderer.close();
-      await this.pdfEngine.close(doc);
+
+      if (doc) {
+        await this.pdfEngine.close(doc);
+      }
 
       if (needsCleanup && cleanupPath) {
         await cleanupConversionFiles(cleanupPath);
       }
     }
-
-    log(`Generated ${results.length} screenshots`);
-    return results;
   }
 
   /**
