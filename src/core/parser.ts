@@ -23,6 +23,7 @@ import {
   guessExtensionFromBuffer,
 } from "../conversion/convertToPdf.js";
 import { cleanOcrTableArtifacts } from "../processing/textUtils.js";
+import { buildTextPassthroughResult } from "./textPassthrough.js";
 
 /**
  * Main document parser class. Handles PDF parsing, OCR, format conversion,
@@ -116,7 +117,7 @@ export class LiteParse {
 
       if ("content" in conversionResult) {
         log(`File is a text-based format. Returning content directly.`);
-        return { pages: [], text: conversionResult.content };
+        return buildTextPassthroughResult(conversionResult.content, this.config);
       }
 
       const pdfPath = conversionResult.pdfPath;
@@ -145,7 +146,7 @@ export class LiteParse {
 
         if ("content" in conversionResult) {
           log(`Buffer is a text-based format. Returning content directly.`);
-          return { pages: [], text: conversionResult.content };
+          return buildTextPassthroughResult(conversionResult.content, this.config);
         }
 
         needsCleanup = true;
