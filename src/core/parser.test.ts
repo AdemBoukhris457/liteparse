@@ -345,6 +345,8 @@ const {
 
 import { LiteParse } from "./parser";
 import { LiteParseConfig, ScreenshotResult } from "./types";
+import { cleanupConversionFiles } from "../conversion/convertToPdf.js";
+import { PdfJsEngine } from "../engines/pdf/pdfjs.js";
 
 vi.mock("../conversion/convertToPdf.js", async () => {
   const actual = await vi.importActual<typeof import("../conversion/convertToPdf.js")>(
@@ -595,6 +597,46 @@ describe("Parse tests", () => {
         return typeof page.boundingBoxes != "undefined";
       }).length
     ).toBe(0);
+  });
+});
+
+describe("conversion temp cleanup", () => {
+  it("cleans up converted temp files when loadDocument fails during parse", async () => {
+    vi.mocked(cleanupConversionFiles).mockClear();
+
+    vi.mocked(PdfJsEngine).mockImplementationOnce(
+      class {
+        loadDocument = vi.fn().mockRejectedValue(new Error("Invalid PDF"));
+        close = vi.fn().mockResolvedValue(undefined);
+        extractAllPages = vi.fn();
+        extractPage = vi.fn();
+        renderPageImage = vi.fn();
+      } as unknown as typeof PdfJsEngine
+    );
+
+    const liteparse = new LiteParse({ ocrEnabled: false });
+    await expect(liteparse.parse("/tmp/test.docx")).rejects.toThrow("Invalid PDF");
+    expect(cleanupConversionFiles).toHaveBeenCalledTimes(1);
+    expect(cleanupConversionFiles).toHaveBeenCalledWith("/tmp/converted.pdf");
+  });
+
+  it("cleans up converted temp files when loadDocument fails during screenshot", async () => {
+    vi.mocked(cleanupConversionFiles).mockClear();
+
+    vi.mocked(PdfJsEngine).mockImplementationOnce(
+      class {
+        loadDocument = vi.fn().mockRejectedValue(new Error("Invalid PDF"));
+        close = vi.fn().mockResolvedValue(undefined);
+        extractAllPages = vi.fn();
+        extractPage = vi.fn();
+        renderPageImage = vi.fn();
+      } as unknown as typeof PdfJsEngine
+    );
+
+    const liteparse = new LiteParse({ ocrEnabled: false });
+    await expect(liteparse.screenshot("/tmp/test.docx")).rejects.toThrow("Invalid PDF");
+    expect(cleanupConversionFiles).toHaveBeenCalledTimes(1);
+    expect(cleanupConversionFiles).toHaveBeenCalledWith("/tmp/converted.pdf");
   });
 });
 
