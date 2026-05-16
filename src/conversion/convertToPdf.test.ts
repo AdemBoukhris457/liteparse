@@ -157,7 +157,13 @@ vi.mock("fs", async () => {
       mkdtemp: vi.fn(async () => {
         return "/tmp/test";
       }),
-      readFile: vi.fn(async () => {
+      readFile: vi.fn(async (filePath: string) => {
+        if (filePath.includes("test.bin") || filePath.includes("input.bin")) {
+          return Buffer.from([0x00, 0x01, 0x02, 0x03]);
+        }
+        if (filePath.includes("binary_no_ext")) {
+          return Buffer.from([0x00, 0x05, 0xff]);
+        }
         return "hello world";
       }),
     },
@@ -351,6 +357,35 @@ describe("test convertToPdf", () => {
     const result = await convertToPdf("test.txt");
     expect(result).toStrictEqual({
       content: "hello world",
+    });
+  });
+
+  it("rejects .bin files as unsupported binary", async () => {
+    const result = await convertToPdf("test.bin");
+    expect(result).toMatchObject({
+      code: "UNSUPPORTED_FORMAT",
+      message: expect.stringContaining("Unsupported binary"),
+    });
+  });
+
+  it("converts .zip (OOXML container) via LibreOffice", async () => {
+    enqueueLibreOfficeLookup();
+    enqueueSpawnPlan({ stdout: "conversion successful", code: 0 });
+
+    const result = await convertToPdf("test.zip");
+    expect(result).toStrictEqual({
+      pdfPath: path.join("/tmp/test", "test.pdf"),
+      originalExtension: ".zip",
+    });
+  });
+
+  it("rejects extensionless binary content", async () => {
+    mockFileTypeFromFile.mockResolvedValue(undefined);
+
+    const result = await convertToPdf("binary_no_ext");
+    expect(result).toMatchObject({
+      code: "UNSUPPORTED_FORMAT",
+      message: expect.stringContaining("Unsupported binary"),
     });
   });
 });
