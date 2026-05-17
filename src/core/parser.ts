@@ -243,7 +243,6 @@ export class LiteParse {
 
     log(`Generating screenshots for: ${typeof input === "string" ? input : "<buffer>"}`);
 
-    let doc: PdfDocument;
     let pdfInput: string | Uint8Array;
     let needsCleanup = false;
     let cleanupPath: string | undefined;
@@ -266,15 +265,12 @@ export class LiteParse {
         log(`Converted ${conversionResult.originalExtension} to PDF`);
       }
 
-      doc = await this.pdfEngine.loadDocument(pdfPath, this.config.password);
       pdfInput = pdfPath;
     } else {
       const ext = await guessExtensionFromBuffer(input);
 
       if (ext === ".pdf") {
-        const data = input instanceof Uint8Array ? input : new Uint8Array(input);
-        doc = await this.pdfEngine.loadDocument(data, this.config.password);
-        pdfInput = data;
+        pdfInput = input instanceof Uint8Array ? input : new Uint8Array(input);
       } else {
         const conversionResult = await convertBufferToPdf(input, this.config.password);
 
@@ -289,17 +285,16 @@ export class LiteParse {
         needsCleanup = true;
         cleanupPath = conversionResult.pdfPath;
         log(`Converted ${conversionResult.originalExtension} buffer to PDF`);
-        doc = await this.pdfEngine.loadDocument(conversionResult.pdfPath, this.config.password);
         pdfInput = conversionResult.pdfPath;
       }
     }
 
-    const totalPages = doc.numPages;
-    const results: ScreenshotResult[] = [];
-    const pages = pageNumbers || Array.from({ length: totalPages }, (_, i) => i + 1);
-
     const renderer = new PdfiumRenderer();
     await renderer.loadDocument(pdfInput, this.config.password);
+
+    const totalPages = renderer.getPageCount();
+    const results: ScreenshotResult[] = [];
+    const pages = pageNumbers || Array.from({ length: totalPages }, (_, i) => i + 1);
 
     try {
       for (const pageNum of pages) {
@@ -309,20 +304,17 @@ export class LiteParse {
         }
 
         log(`Rendering page ${pageNum}...`);
-        const imageBuffer = await renderer.renderPageToBuffer(pdfInput, pageNum, this.config.dpi);
-
-        const pageData = await this.pdfEngine.extractPage(doc, pageNum, { extractImages: false });
+        const rendered = await renderer.renderPage(pdfInput, pageNum, this.config.dpi);
 
         results.push({
           pageNum,
-          width: pageData.width,
-          height: pageData.height,
-          imageBuffer,
+          width: rendered.width,
+          height: rendered.height,
+          imageBuffer: rendered.imageBuffer,
         });
       }
     } finally {
       await renderer.close();
-      await this.pdfEngine.close(doc);
 
       if (needsCleanup && cleanupPath) {
         await cleanupConversionFiles(cleanupPath);
