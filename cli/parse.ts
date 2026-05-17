@@ -171,6 +171,7 @@ program
       // Create parser
       const parser = new LiteParse(config);
 
+      try {
       // Read from stdin or file
       let input: string | Buffer;
       if (isStdin) {
@@ -211,6 +212,9 @@ program
       } else {
         // Output result to stdout (can be piped)
         console.log(output);
+      }
+      } finally {
+        await parser.destroy();
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -278,8 +282,10 @@ program
       // Create parser
       const parser = new LiteParse(config);
 
+      let results;
+      try {
       // Generate screenshots
-      const results = await parser.screenshot(file, pageNumbers, quiet);
+      results = await parser.screenshot(file, pageNumbers, quiet);
 
       // Save screenshots
       for (const result of results) {
@@ -293,6 +299,9 @@ program
 
       if (!quiet) {
         console.error(`\n✓ Generated ${results.length} screenshots → ${outputDir}`);
+      }
+      } finally {
+        await parser.destroy();
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -436,6 +445,7 @@ program
       // Create a SINGLE parser instance for all files (key for batch efficiency)
       const parser = new LiteParse(config);
 
+      try {
       // Process files
       let successCount = 0;
       let errorCount = 0;
@@ -495,6 +505,9 @@ program
 
       if (errorCount > 0) {
         process.exit(1);
+      }
+      } finally {
+        await parser.destroy();
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
