@@ -12,7 +12,11 @@ const mockPDFiumPageRender = {
 const mockPdfiumPage = {
   render: vi.fn(
     async (options: {
-      render: (renderOptions: { width: number; height: number; data: Uint8Array }) => Promise<unknown>;
+      render: (renderOptions: {
+        width: number;
+        height: number;
+        data: Uint8Array;
+      }) => Promise<unknown>;
     }) => {
       await options.render({
         width: mockPDFiumPageRender.width,
