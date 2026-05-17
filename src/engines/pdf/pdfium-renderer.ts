@@ -33,6 +33,14 @@ interface PdfiumPageInternal {
   objects(): Iterable<{ type: string; objectIdx: number }>;
 }
 
+export interface RenderedPageBuffer {
+  imageBuffer: Buffer;
+  /** Rendered image width in pixels at the requested DPI. */
+  width: number;
+  /** Rendered image height in pixels at the requested DPI. */
+  height: number;
+}
+
 /**
  * PDFium-based PDF screenshot renderer
  * Uses native PDFium library for high-quality, fast screenshots
@@ -67,6 +75,16 @@ export class PdfiumRenderer {
     }
   }
 
+  /**
+   * Number of pages in the document loaded by {@link loadDocument}.
+   */
+  getPageCount(): number {
+    if (!this.cachedDocument) {
+      throw new Error("Document not loaded. Call loadDocument() first.");
+    }
+    return this.cachedDocument.getPageCount();
+  }
+
   private async getOrLoadDocument(
     pdfInput: string | Buffer | Uint8Array,
     password?: string
@@ -81,21 +99,25 @@ export class PdfiumRenderer {
     return { document, isTemporary: true };
   }
 
-  async renderPageToBuffer(
+  async renderPage(
     pdfInput: string | Buffer | Uint8Array,
     pageNumber: number,
     dpi: number = 150,
     password?: string
-  ): Promise<Buffer> {
+  ): Promise<RenderedPageBuffer> {
     const { document, isTemporary } = await this.getOrLoadDocument(pdfInput, password);
 
     try {
       const page = document.getPage(pageNumber - 1);
       const scale = dpi / 72;
+      let width = 0;
+      let height = 0;
 
       const image = await page.render({
         scale,
         render: async (options: PDFiumPageRenderOptions) => {
+          width = options.width;
+          height = options.height;
           return await sharp(options.data, {
             raw: {
               width: options.width,
@@ -113,12 +135,26 @@ export class PdfiumRenderer {
         },
       });
 
-      return Buffer.from(image.data);
+      return {
+        imageBuffer: Buffer.from(image.data),
+        width,
+        height,
+      };
     } finally {
       if (isTemporary) {
         document.destroy();
       }
     }
+  }
+
+  async renderPageToBuffer(
+    pdfInput: string | Buffer | Uint8Array,
+    pageNumber: number,
+    dpi: number = 150,
+    password?: string
+  ): Promise<Buffer> {
+    const rendered = await this.renderPage(pdfInput, pageNumber, dpi, password);
+    return rendered.imageBuffer;
   }
 
   /**
