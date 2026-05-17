@@ -32,7 +32,7 @@ The core module contains the main orchestrator class, configuration management, 
 - **Engine auto-detection**: If `ocrServerUrl` is provided, uses HTTP OCR; otherwise defaults to Tesseract.js for zero-setup experience
 - **Selective OCR**: Only runs OCR on pages with <100 characters of text OR pages with embedded images
 - **Progress logging to stderr**: Keeps stdout clean for piped output
-- **Graceful cleanup**: Always cleans up temp files and terminates OCR workers
+- **Graceful cleanup**: Cleans up temp files per parse; call `destroy()` to terminate OCR workers when done with the instance
 
 ---
 

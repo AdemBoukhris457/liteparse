@@ -51,7 +51,7 @@ Maps common ISO 639-1 codes to Tesseract's 3-letter codes:
 - `initialize(language)` - Create/recreate worker for language
 - `recognize(image, options)` - OCR single image (accepts file path or Buffer)
 - `recognizeBatch(images, options)` - OCR multiple images sequentially
-- `terminate()` - Clean up worker (called by LiteParse after parsing)
+- `terminate()` - Clean up worker pool (call via `LiteParse.destroy()` when done with the instance)
 
 **Design Decisions:**
 - **30% confidence threshold**: Filters noisy OCR results (tesseract.ts:59)
