@@ -470,18 +470,27 @@ export async function convertToPdf(
 }
 
 /**
+ * Remove a temp file or directory created under {@link getTmpDir}.
+ */
+export async function cleanupTempPath(tempPath: string): Promise<void> {
+  if (!tempPath.includes(getTmpDir())) {
+    return;
+  }
+
+  try {
+    const stat = await fs.stat(tempPath);
+    const target = stat.isDirectory() ? tempPath : path.dirname(tempPath);
+    await fs.rm(target, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup errors (missing path, permissions, etc.)
+  }
+}
+
+/**
  * Clean up temporary conversion files
  */
 export async function cleanupConversionFiles(pdfPath: string): Promise<void> {
-  try {
-    // Only delete if in temp directory
-    if (pdfPath.includes(getTmpDir())) {
-      const dir = path.dirname(pdfPath);
-      await fs.rm(dir, { recursive: true, force: true });
-    }
-  } catch {
-    // Ignore cleanup errors
-  }
+  await cleanupTempPath(pdfPath);
 }
 
 /**
@@ -506,9 +515,25 @@ export async function convertBufferToPdf(
   const ext = await guessExtensionFromBuffer(data);
 
   // Write buffer to temp file with detected extension (use .bin for unknown)
-  const tmpDir = await fs.mkdtemp(path.join(getTmpDir(), "liteparse-"));
-  const tmpPath = path.join(tmpDir, `input${ext || ".bin"}`);
-  await fs.writeFile(tmpPath, data);
+  const stagingDir = await fs.mkdtemp(path.join(getTmpDir(), "liteparse-"));
+  const tmpPath = path.join(stagingDir, `input${ext || ".bin"}`);
+  let retainStaging = false;
 
-  return convertToPdf(tmpPath, password);
+  try {
+    await fs.writeFile(tmpPath, data);
+    const result = await convertToPdf(tmpPath, password);
+
+    // When the PDF lives in the staging dir (buffer detected as PDF), the parser
+    // cleans up via cleanupConversionFiles(pdfPath). Otherwise drop staging now —
+    // convertToPdf has finished reading the input file from a separate output dir.
+    if ("pdfPath" in result) {
+      retainStaging = path.resolve(path.dirname(result.pdfPath)) === path.resolve(stagingDir);
+    }
+
+    return result;
+  } finally {
+    if (!retainStaging) {
+      await cleanupTempPath(stagingDir);
+    }
+  }
 }
