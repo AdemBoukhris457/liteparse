@@ -201,12 +201,8 @@ export class LiteParse {
 
       return result;
     } finally {
-      // Always release resources, even if processing throws
+      // Always release per-document resources, even if processing throws
       await this.pdfEngine.close(doc);
-
-      if (this.ocrEngine && "terminate" in this.ocrEngine) {
-        await (this.ocrEngine as TesseractEngine).terminate();
-      }
 
       if (needsCleanup && cleanupPath) {
         await cleanupConversionFiles(cleanupPath);
@@ -481,6 +477,19 @@ export class LiteParse {
       }
     } catch (error) {
       log(`  OCR failed for page ${page.pageNum}: ${error}`);
+    }
+  }
+
+  /**
+   * Release long-lived resources held by this parser instance.
+   *
+   * Terminates the Tesseract worker pool when built-in OCR is enabled. Safe to call
+   * multiple times. After `destroy()`, further `parse()` / `screenshot()` calls are
+   * allowed but will re-initialize OCR workers on demand.
+   */
+  async destroy(): Promise<void> {
+    if (this.ocrEngine && "terminate" in this.ocrEngine) {
+      await (this.ocrEngine as TesseractEngine).terminate();
     }
   }
 
