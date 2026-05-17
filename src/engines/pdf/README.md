@@ -96,7 +96,10 @@ Used for generating page images for OCR and the `screenshot` command. Provides b
 
 **Methods:**
 - `init()` - Initialize PDFium library (called automatically)
-- `renderPageToBuffer(pdfInput, pageNumber, dpi)` - Render page to PNG buffer. Accepts a file path (`string`), `Buffer`, or `Uint8Array`.
+- `loadDocument(pdfInput, password?)` - Cache a document for repeated page operations.
+- `getPageCount()` - Page count for the loaded document (used by `screenshot()`).
+- `renderPage(pdfInput, pageNumber, dpi)` - Render page to PNG buffer with pixel `width`/`height`.
+- `renderPageToBuffer(pdfInput, pageNumber, dpi)` - Same render; returns the buffer only (used by OCR paths).
 - `close()` - Cleanup PDFium resources
 
 **Design Decision:**
