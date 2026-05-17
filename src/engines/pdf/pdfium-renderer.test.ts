@@ -10,15 +10,25 @@ const mockPDFiumPageRender = {
 };
 
 const mockPdfiumPage = {
-  render: vi.fn(async () => {
-    return mockPDFiumPageRender;
-  }),
+  render: vi.fn(
+    async (options: {
+      render: (renderOptions: { width: number; height: number; data: Uint8Array }) => Promise<unknown>;
+    }) => {
+      await options.render({
+        width: mockPDFiumPageRender.width,
+        height: mockPDFiumPageRender.height,
+        data: mockPDFiumPageRender.data,
+      });
+      return mockPDFiumPageRender;
+    }
+  ),
 };
 
 const mockPdfiumDoc = {
   getPage: vi.fn(() => {
     return mockPdfiumPage;
   }),
+  getPageCount: vi.fn(() => 3),
   destroy: vi.fn(),
 };
 
@@ -72,6 +82,14 @@ describe("test renderPageToBuffer", () => {
     const renderer = new PdfiumRenderer();
     const result = await renderer.renderPageToBuffer("test.pdf", 1);
     expect(result).toStrictEqual(Buffer.from(mockPDFiumPageRender.data));
+  });
+
+  it("renderPage returns pixel dimensions from the render callback", async () => {
+    const renderer = new PdfiumRenderer();
+    const result = await renderer.renderPage("test.pdf", 1, 150);
+    expect(result.width).toBe(612);
+    expect(result.height).toBe(792);
+    expect(result.imageBuffer).toStrictEqual(Buffer.from(mockPDFiumPageRender.data));
   });
 
   it("test error propagation", async () => {
@@ -130,5 +148,17 @@ describe("document caching", () => {
 
     await renderer.close();
     expect(mockPdfiumDoc.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("getPageCount reads from the cached document", async () => {
+    const renderer = new PdfiumRenderer();
+    await renderer.loadDocument("test.pdf");
+    expect(renderer.getPageCount()).toBe(3);
+    expect(mockPdfiumDoc.getPageCount).toHaveBeenCalled();
+  });
+
+  it("getPageCount throws when no document is loaded", () => {
+    const renderer = new PdfiumRenderer();
+    expect(() => renderer.getPageCount()).toThrow(/loadDocument/i);
   });
 });

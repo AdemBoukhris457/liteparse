@@ -458,6 +458,12 @@ vi.mock("../engines/pdf/pdfium-renderer.js", async () => {
 
         loadDocument = vi.fn(async () => {});
         closeDocument = vi.fn();
+        getPageCount = vi.fn(() => 5);
+        renderPage = vi.fn(async () => ({
+          imageBuffer: Buffer.from(new Uint8Array([1, 2, 3, 4, 5])),
+          width: 612,
+          height: 792,
+        }));
         renderPageToBuffer = vi.fn(async () => Buffer.from(new Uint8Array([1, 2, 3, 4, 5])));
         close = vi.fn(async () => {});
       }
