@@ -36,11 +36,11 @@ LiteParse's core parsing works on PDFs. This module extends support to 50+ forma
 - Returns `ConversionError` with `message` and `code` on failure
 - If already PDF, returns path unchanged
 
-`convertBufferToPdf(data)` - Entry point for buffer input
+`convertBufferToPdf(data)` - Entry point for buffer input; cleans up the input staging directory after conversion (unless the PDF is served from that same directory)
 - Detects format from magic bytes, writes to temp file, then delegates to `convertToPdf`
 - Used when `LiteParse.parse()` receives a non-PDF `Buffer` or `Uint8Array`
 
-`cleanupConversionFiles(pdfPath)` - Removes temp files after parsing
+`cleanupConversionFiles(pdfPath)` / `cleanupTempPath(path)` - Removes temp files or directories under `getTmpDir()` after parsing
 - Only deletes files in the configured temp directory (`LITEPARSE_TMPDIR` or OS default)
 - Called by `LiteParse.parse()` after processing
 
