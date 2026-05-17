@@ -172,47 +172,47 @@ program
       const parser = new LiteParse(config);
 
       try {
-      // Read from stdin or file
-      let input: string | Buffer;
-      if (isStdin) {
-        const chunks: Buffer[] = [];
-        for await (const chunk of process.stdin) {
-          chunks.push(chunk);
+        // Read from stdin or file
+        let input: string | Buffer;
+        if (isStdin) {
+          const chunks: Buffer[] = [];
+          for await (const chunk of process.stdin) {
+            chunks.push(chunk);
+          }
+          input = Buffer.concat(chunks);
+          if (input.length === 0) {
+            console.error("Error: No data received from stdin");
+            process.exit(1);
+          }
+        } else {
+          input = file;
         }
-        input = Buffer.concat(chunks);
-        if (input.length === 0) {
-          console.error("Error: No data received from stdin");
-          process.exit(1);
+
+        // Parse document (quiet flag controls progress output)
+        const result = await parser.parse(input, quiet);
+
+        // Format output based on format
+        let output: string;
+        switch (config.outputFormat) {
+          case "json":
+            output = JSON.stringify(result.json, null, 2);
+            break;
+          case "text":
+          default:
+            output = result.text;
+            break;
         }
-      } else {
-        input = file;
-      }
 
-      // Parse document (quiet flag controls progress output)
-      const result = await parser.parse(input, quiet);
-
-      // Format output based on format
-      let output: string;
-      switch (config.outputFormat) {
-        case "json":
-          output = JSON.stringify(result.json, null, 2);
-          break;
-        case "text":
-        default:
-          output = result.text;
-          break;
-      }
-
-      // Write to file or stdout
-      if (options.output) {
-        await fs.writeFile(options.output, output);
-        if (!quiet) {
-          console.error(`\n✓ Parsed ${result.pages.length} pages → ${options.output}`);
+        // Write to file or stdout
+        if (options.output) {
+          await fs.writeFile(options.output, output);
+          if (!quiet) {
+            console.error(`\n✓ Parsed ${result.pages.length} pages → ${options.output}`);
+          }
+        } else {
+          // Output result to stdout (can be piped)
+          console.log(output);
         }
-      } else {
-        // Output result to stdout (can be piped)
-        console.log(output);
-      }
       } finally {
         await parser.destroy();
       }
@@ -284,22 +284,22 @@ program
 
       let results;
       try {
-      // Generate screenshots
-      results = await parser.screenshot(file, pageNumbers, quiet);
+        // Generate screenshots
+        results = await parser.screenshot(file, pageNumbers, quiet);
 
-      // Save screenshots
-      for (const result of results) {
-        const filename = `page_${result.pageNum}.${options.format || DEFAULT_SCREENSHOT_FORMAT}`;
-        const filepath = path.join(outputDir, filename);
-        await fs.writeFile(filepath, result.imageBuffer);
-        if (!quiet) {
-          console.error(`✓ ${filepath} (${result.width}x${result.height})`);
+        // Save screenshots
+        for (const result of results) {
+          const filename = `page_${result.pageNum}.${options.format || DEFAULT_SCREENSHOT_FORMAT}`;
+          const filepath = path.join(outputDir, filename);
+          await fs.writeFile(filepath, result.imageBuffer);
+          if (!quiet) {
+            console.error(`✓ ${filepath} (${result.width}x${result.height})`);
+          }
         }
-      }
 
-      if (!quiet) {
-        console.error(`\n✓ Generated ${results.length} screenshots → ${outputDir}`);
-      }
+        if (!quiet) {
+          console.error(`\n✓ Generated ${results.length} screenshots → ${outputDir}`);
+        }
       } finally {
         await parser.destroy();
       }
@@ -446,66 +446,66 @@ program
       const parser = new LiteParse(config);
 
       try {
-      // Process files
-      let successCount = 0;
-      let errorCount = 0;
-      const outputExt = options.format === "json" ? ".json" : ".txt";
+        // Process files
+        let successCount = 0;
+        let errorCount = 0;
+        const outputExt = options.format === "json" ? ".json" : ".txt";
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const relativePath = path.relative(inputDir, file);
-        const outputPath = path.join(outputDir, relativePath.replace(/\.[^.]+$/, outputExt));
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const relativePath = path.relative(inputDir, file);
+          const outputPath = path.join(outputDir, relativePath.replace(/\.[^.]+$/, outputExt));
 
-        // Create output subdirectory if needed
-        const outputSubdir = path.dirname(outputPath);
-        if (!existsSync(outputSubdir)) {
-          await fs.mkdir(outputSubdir, { recursive: true });
+          // Create output subdirectory if needed
+          const outputSubdir = path.dirname(outputPath);
+          if (!existsSync(outputSubdir)) {
+            await fs.mkdir(outputSubdir, { recursive: true });
+          }
+
+          try {
+            const fileStart = performance.now();
+            const result = await parser.parse(file, true); // Always quiet for individual files
+
+            // Format output
+            let output: string;
+            if (options.format === "json") {
+              output = JSON.stringify(result.json, null, 2);
+            } else {
+              output = result.text;
+            }
+
+            await fs.writeFile(outputPath, output);
+            successCount++;
+
+            if (!quiet) {
+              const fileTime = (performance.now() - fileStart).toFixed(0);
+              console.error(
+                `[${i + 1}/${files.length}] ✓ ${relativePath} (${result.pages.length} pages, ${fileTime}ms)`
+              );
+            }
+          } catch (error: unknown) {
+            errorCount++;
+            if (!quiet) {
+              const message = error instanceof Error ? error.message : String(error);
+              console.error(`[${i + 1}/${files.length}] ✗ ${relativePath}: ${message}`);
+            }
+          }
         }
 
-        try {
-          const fileStart = performance.now();
-          const result = await parser.parse(file, true); // Always quiet for individual files
+        const totalTime = ((performance.now() - startTime) / 1000).toFixed(2);
+        const avgTime =
+          files.length > 0 ? ((performance.now() - startTime) / files.length).toFixed(0) : 0;
 
-          // Format output
-          let output: string;
-          if (options.format === "json") {
-            output = JSON.stringify(result.json, null, 2);
-          } else {
-            output = result.text;
-          }
-
-          await fs.writeFile(outputPath, output);
-          successCount++;
-
-          if (!quiet) {
-            const fileTime = (performance.now() - fileStart).toFixed(0);
-            console.error(
-              `[${i + 1}/${files.length}] ✓ ${relativePath} (${result.pages.length} pages, ${fileTime}ms)`
-            );
-          }
-        } catch (error: unknown) {
-          errorCount++;
-          if (!quiet) {
-            const message = error instanceof Error ? error.message : String(error);
-            console.error(`[${i + 1}/${files.length}] ✗ ${relativePath}: ${message}`);
-          }
+        if (!quiet) {
+          console.error("");
+          console.error(`Batch complete: ${successCount} succeeded, ${errorCount} failed`);
+          console.error(`Total time: ${totalTime}s (avg ${avgTime}ms/file)`);
+          console.error(`Output: ${outputDir}`);
         }
-      }
 
-      const totalTime = ((performance.now() - startTime) / 1000).toFixed(2);
-      const avgTime =
-        files.length > 0 ? ((performance.now() - startTime) / files.length).toFixed(0) : 0;
-
-      if (!quiet) {
-        console.error("");
-        console.error(`Batch complete: ${successCount} succeeded, ${errorCount} failed`);
-        console.error(`Total time: ${totalTime}s (avg ${avgTime}ms/file)`);
-        console.error(`Output: ${outputDir}`);
-      }
-
-      if (errorCount > 0) {
-        process.exit(1);
-      }
+        if (errorCount > 0) {
+          process.exit(1);
+        }
       } finally {
         await parser.destroy();
       }
