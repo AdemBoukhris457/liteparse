@@ -135,6 +135,9 @@ vi.mock("child_process", () => ({
   spawn: spawnMock,
 }));
 
+const mockRm = vi.hoisted(() => vi.fn(async () => {}));
+const mkdtempDirs = vi.hoisted(() => [] as string[]);
+
 vi.mock("fs", async () => {
   const actual = await vi.importActual<typeof import("fs")>("fs");
   return {
@@ -155,11 +158,18 @@ vi.mock("fs", async () => {
         return;
       }),
       mkdtemp: vi.fn(async () => {
-        return "/tmp/test";
+        const dir = path.join(os.tmpdir(), `liteparse-${mkdtempDirs.length}`);
+        mkdtempDirs.push(dir);
+        return dir;
       }),
+      rm: mockRm,
+      writeFile: vi.fn(async () => {}),
       readFile: vi.fn(async () => {
         return "hello world";
       }),
+      stat: vi.fn(async (filePath: string) => ({
+        isDirectory: () => /liteparse-\d+$/.test(String(filePath)),
+      })),
     },
   };
 });
@@ -172,6 +182,7 @@ import {
   convertOfficeDocument,
   convertImageToPdf,
   convertToPdf,
+  convertBufferToPdf,
   getTmpDir,
 } from "./convertToPdf";
 
@@ -179,6 +190,8 @@ afterEach(() => {
   spawnPlans.length = 0;
   spawnMock.mockClear();
   mockFileTypeFromFile.mockReset();
+  mockRm.mockClear();
+  mkdtempDirs.length = 0;
   vi.restoreAllMocks();
 });
 
@@ -320,7 +333,7 @@ describe("test convertToPdf", () => {
 
     const result = await convertToPdf("test_1.docx");
     expect(result).toStrictEqual({
-      pdfPath: path.join("/tmp/test", "test_1.pdf"),
+      pdfPath: path.join(os.tmpdir(), "liteparse-0", "test_1.pdf"),
       originalExtension: ".docx",
     });
   });
@@ -331,7 +344,7 @@ describe("test convertToPdf", () => {
 
     const result = await convertToPdf("test.xlsx");
     expect(result).toStrictEqual({
-      pdfPath: path.join("/tmp/test", "test.pdf"),
+      pdfPath: path.join(os.tmpdir(), "liteparse-0", "test.pdf"),
       originalExtension: ".xlsx",
     });
   });
@@ -342,7 +355,7 @@ describe("test convertToPdf", () => {
 
     const result = await convertToPdf("test.png");
     expect(result).toStrictEqual({
-      pdfPath: path.join("/tmp/test", "test.pdf"),
+      pdfPath: path.join(os.tmpdir(), "liteparse-0", "test.pdf"),
       originalExtension: ".png",
     });
   });
@@ -394,6 +407,53 @@ describe("test guessExtensionFromBuffer", () => {
   it("works with Uint8Array input", async () => {
     const pdfBytes = new Uint8Array(Buffer.from("%PDF-1.7"));
     expect(await guessExtensionFromBuffer(pdfBytes)).toBe(".pdf");
+  });
+});
+
+describe("test convertBufferToPdf", () => {
+  it("removes input staging dir when PDF is written to a separate output dir", async () => {
+    enqueueImageMagickLookup();
+    enqueueSpawnPlan({ stdout: "conversion successful", code: 0 });
+
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const result = await convertBufferToPdf(pngBytes);
+
+    const stagingDir = path.join(os.tmpdir(), "liteparse-0");
+    const outputDir = path.join(os.tmpdir(), "liteparse-1");
+
+    expect(result).toMatchObject({
+      pdfPath: path.join(outputDir, "input.pdf"),
+      originalExtension: ".png",
+    });
+    expect(mkdtempDirs).toEqual([stagingDir, outputDir]);
+    expect(mockRm).toHaveBeenCalledWith(stagingDir, {
+      recursive: true,
+      force: true,
+    });
+  });
+
+  it("keeps staging dir when converted PDF path is inside staging (PDF buffer)", async () => {
+    const pdfBytes = Buffer.from("%PDF-1.4");
+    const result = await convertBufferToPdf(pdfBytes);
+
+    const stagingDir = path.join(os.tmpdir(), "liteparse-0");
+    expect(result).toMatchObject({
+      pdfPath: path.join(stagingDir, "input.pdf"),
+      originalExtension: ".pdf",
+    });
+    expect(mockRm).not.toHaveBeenCalled();
+  });
+
+  it("removes staging dir on text passthrough", async () => {
+    const unknownBytes = Buffer.from([0x00, 0x01, 0x02, 0x03]);
+    const result = await convertBufferToPdf(unknownBytes);
+
+    const stagingDir = path.join(os.tmpdir(), "liteparse-0");
+    expect(result).toMatchObject({ content: "hello world" });
+    expect(mockRm).toHaveBeenCalledWith(stagingDir, {
+      recursive: true,
+      force: true,
+    });
   });
 });
 
