@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::config::{LiteParseConfig, parse_target_pages};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::conversion;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::conversion::convert_data_to_pdf;
 use crate::error::LiteParseError;
 use crate::extract;
@@ -84,17 +85,25 @@ impl LiteParse {
 
         let t0 = web_time::Instant::now();
 
-        let _tmp_dir;
         let mut is_converted = false;
+        let _tmp_dir: Option<tempfile::TempDir>;
 
-        let validated_input = match input {
-            PdfInput::Path(p) => PdfInput::Path(p),
-            PdfInput::Bytes(b) => {
-                let (converted, tmp_dir) =
-                    convert_data_to_pdf(b, self.config.password.as_deref()).await?;
-                _tmp_dir = tmp_dir;
-                is_converted = true;
-                PdfInput::Path(converted.pdf_path)
+        let validated_input = {
+            #[cfg(target_arch = "wasm32")]
+            {
+                input
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            match input {
+                PdfInput::Path(p) => PdfInput::Path(p),
+                PdfInput::Bytes(b) => {
+                    let (converted, tmp_dir) =
+                        convert_data_to_pdf(b, self.config.password.as_deref()).await?;
+                    _tmp_dir = tmp_dir;
+                    is_converted = true;
+                    PdfInput::Path(converted.pdf_path)
+                }
             }
         };
 
@@ -191,7 +200,7 @@ impl LiteParse {
         // With this block, we insure that temporary PDFs created from bytes and/or
         // converted from Office/image files are cleaned up as well.
         if is_converted && let PdfInput::Path(p) = validated_input {
-            tokio::fs::remove_dir_all(Path::new(&p).parent().unwrap()).await?;
+            std::fs::remove_dir_all(Path::new(&p).parent().unwrap())?;
         }
 
         Ok(ParseResult {
