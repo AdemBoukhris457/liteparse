@@ -181,6 +181,10 @@ struct ExtractCommand {
     /// Target page number (1-based)
     #[arg(long)]
     page_num: Option<u32>,
+
+    /// Password for encrypted/protected PDFs
+    #[arg(long)]
+    password: Option<String>,
 }
 
 fn parse_output_format(s: &str) -> Result<OutputFormat, String> {
@@ -384,11 +388,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Extract(cmd) => {
-            extract::extract(&cmd.pdf_path, cmd.page_num)?;
+            extract::extract(&cmd.pdf_path, cmd.page_num, cmd.password.as_deref())?;
         }
 
         Commands::ImageBounds(cmd) => {
-            render::image_bounds(&cmd.pdf_path, cmd.page_num)?;
+            render::image_bounds(&cmd.pdf_path, cmd.page_num, cmd.password.as_deref())?;
         }
     }
 

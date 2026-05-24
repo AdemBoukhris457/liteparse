@@ -6,13 +6,14 @@ use pdfium::{Font, FontType, Library, Page, RectF, TextPage};
 pub fn extract_pages(
     pdf_path: &str,
     page_num: Option<u32>,
+    password: Option<&str>,
 ) -> Result<Vec<LitePage>, LiteParseError> {
     let target_pages: Option<Vec<u32>> = page_num.map(|p| vec![p]);
     extract_pages_from_input(
         &PdfInput::Path(pdf_path.to_string()),
         target_pages.as_deref(),
         usize::MAX,
-        None,
+        password,
     )
 }
 
@@ -81,8 +82,12 @@ pub fn extract_pages_from_input(
 }
 
 /// Extract raw text items and print each page as a JSON-line object to stdout.
-pub fn extract(pdf_path: &str, page_num: Option<u32>) -> Result<(), LiteParseError> {
-    let pages = extract_pages(pdf_path, page_num)?;
+pub fn extract(
+    pdf_path: &str,
+    page_num: Option<u32>,
+    password: Option<&str>,
+) -> Result<(), LiteParseError> {
+    let pages = extract_pages(pdf_path, page_num, password)?;
     for page in &pages {
         println!("{}", serde_json::to_string(page)?);
     }
@@ -974,7 +979,7 @@ mod tests {
 
     #[test]
     fn extract_pages_missing_file_errors() {
-        let res = extract_pages("/nonexistent/path/does-not-exist.pdf", None);
+        let res = extract_pages("/nonexistent/path/does-not-exist.pdf", None, None);
         assert!(res.is_err());
     }
 

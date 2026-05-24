@@ -59,9 +59,13 @@ struct ImageBoundsOutput {
 }
 
 /// Extract image bounding boxes and print as JSON to stdout.
-pub fn image_bounds(pdf_path: &str, page_num: Option<u32>) -> Result<(), LiteParseError> {
+pub fn image_bounds(
+    pdf_path: &str,
+    page_num: Option<u32>,
+    password: Option<&str>,
+) -> Result<(), LiteParseError> {
     let lib = Library::init();
-    let document = lib.load_document(pdf_path, None)?;
+    let document = lib.load_document(pdf_path, password)?;
     let page_count = document.page_count();
 
     for page_index in 0..page_count {
@@ -124,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_image_bounds_missing_file_errors() {
-        let r = image_bounds("/nonexistent/path/does_not_exist.pdf", None);
+        let r = image_bounds("/nonexistent/path/does_not_exist.pdf", None, None);
         assert!(r.is_err());
     }
 }
