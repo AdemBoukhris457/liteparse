@@ -4,7 +4,13 @@ use crate::error::LiteParseError;
 use crate::ocr::{OcrEngine, OcrOptions, OcrResult};
 use crate::types::{Page, TextItem};
 use image::{ImageBuffer, Rgba};
-use pdfium::Document;
+use pdfium::{Bitmap, Document};
+
+/// Minimum native text length before skipping full-page OCR.
+const SPARSE_PAGE_TEXT_THRESHOLD: usize = 100;
+/// Match `Page::image_bounds` filters in the OCR trigger path.
+const MIN_IMAGE_SIZE_PT: f32 = 25.0;
+const MAX_IMAGE_PAGE_COVERAGE: f32 = 0.9;
 
 /// Owned page bitmap prepared for OCR. Indices refer to positions in the `pages` slice.
 pub(crate) struct RenderedPage {
@@ -12,9 +18,26 @@ pub(crate) struct RenderedPage {
     pub rgb_bytes: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub coord_map: OcrCoordMap,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum OcrCoordMap {
+    FullPage {
+        dpi: f32,
+    },
+    ImageRegion {
+        page_x: f32,
+        page_y: f32,
+        page_w: f32,
+        page_h: f32,
+    },
 }
 
 /// Render pages that need OCR from an already-open document.
+///
+/// OCR is triggered when a page has fewer than [`SPARSE_PAGE_TEXT_THRESHOLD`] characters
+/// of native text (full-page OCR) or has qualifying embedded images (per-image OCR).
 ///
 /// The pdfium `Document` holds raw pointers that are not `Send`, so callers must
 /// drop it before awaiting the OCR engine.
@@ -27,45 +50,66 @@ pub(crate) fn render_pages_for_ocr(
     for (idx, page) in pages.iter().enumerate() {
         let text_length: usize = page.text_items.iter().map(|item| item.text.len()).sum();
         let page_obj = document.page((page.page_number - 1) as i32)?;
-        let has_images = !page_obj.image_bounds(25.0, 0.9).is_empty();
+        let images = page_obj.image_bounds(MIN_IMAGE_SIZE_PT, MAX_IMAGE_PAGE_COVERAGE);
 
-        if text_length >= 100 && !has_images {
+        if text_length >= SPARSE_PAGE_TEXT_THRESHOLD && images.is_empty() {
             continue;
         }
 
-        let bitmap = page_obj.render(dpi)?;
-        let width = bitmap.width() as u32;
-        let height = bitmap.height() as u32;
-        let rgba = bitmap.to_rgba();
+        if text_length < SPARSE_PAGE_TEXT_THRESHOLD {
+            let bitmap = page_obj.render(dpi)?;
+            let (rgb_bytes, width, height) = bitmap_to_rgb(&bitmap)?;
+            rendered.push(RenderedPage {
+                idx,
+                rgb_bytes,
+                width,
+                height,
+                coord_map: OcrCoordMap::FullPage { dpi },
+            });
+            continue;
+        }
 
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(width, height, rgba)
-            .ok_or(LiteParseError::Other(
-                "failed to create image buffer".into(),
-            ))?;
-        let rgb_img = image::DynamicImage::ImageRgba8(img).to_rgb8();
-        let rgb_bytes = rgb_img.into_raw();
-
-        rendered.push(RenderedPage {
-            idx,
-            rgb_bytes,
-            width,
-            height,
-        });
+        for (image_idx, bounds) in images.iter().enumerate() {
+            let bitmap = page_obj.render_image_object(image_idx)?;
+            let (rgb_bytes, width, height) = bitmap_to_rgb(&bitmap)?;
+            rendered.push(RenderedPage {
+                idx,
+                rgb_bytes,
+                width,
+                height,
+                coord_map: OcrCoordMap::ImageRegion {
+                    page_x: bounds.x,
+                    page_y: bounds.y,
+                    page_w: bounds.width,
+                    page_h: bounds.height,
+                },
+            });
+        }
     }
     Ok(rendered)
+}
+
+fn bitmap_to_rgb(bitmap: &Bitmap) -> Result<(Vec<u8>, u32, u32), LiteParseError> {
+    let width = bitmap.width() as u32;
+    let height = bitmap.height() as u32;
+    let rgba = bitmap.to_rgba();
+
+    let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(width, height, rgba).ok_or(
+        LiteParseError::Other("failed to create image buffer".into()),
+    )?;
+    let rgb_img = image::DynamicImage::ImageRgba8(img).to_rgb8();
+    Ok((rgb_img.into_raw(), width, height))
 }
 
 /// Run OCR on pre-rendered page bitmaps and merge results into `pages`.
 pub(crate) async fn ocr_and_merge_rendered(
     pages: &mut [Page],
     rendered: Vec<RenderedPage>,
-    dpi: f32,
+    _dpi: f32,
     ocr_engine: Arc<dyn OcrEngine>,
     ocr_language: &str,
     num_workers: usize,
 ) -> Result<(), LiteParseError> {
-    // Phase 1: spawn OCR tasks onto the tokio runtime so they run on
-    // separate threads. A semaphore limits concurrency to `num_workers`.
     let num_workers = num_workers.max(1);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(num_workers));
     let mut handles = Vec::with_capacity(rendered.len());
@@ -78,12 +122,17 @@ pub(crate) async fn ocr_and_merge_rendered(
         let language = ocr_language.to_string();
         let page_number = pages[r.idx].page_number;
         let rt_handle = handle.clone();
+        let coord_map = r.coord_map;
+        let bw = r.width;
+        let bh = r.height;
 
         handles.push((
             r.idx,
             page_number,
+            coord_map,
+            bw,
+            bh,
             tokio::task::spawn_blocking(move || {
-                // Block this thread until a permit is available.
                 let _permit = rt_handle
                     .block_on(sem.acquire_owned())
                     .expect("semaphore closed");
@@ -93,10 +142,7 @@ pub(crate) async fn ocr_and_merge_rendered(
         ));
     }
 
-    // Phase 3: collect results and merge into pages.
-    let scale_factor = 72.0 / dpi;
-
-    for (idx, page_number, handle) in handles {
+    for (idx, page_number, coord_map, bitmap_width, bitmap_height, handle) in handles {
         let ocr_results: Vec<OcrResult> = match handle.await {
             Ok(Ok(results)) => results,
             Ok(Err(e)) => {
@@ -114,17 +160,19 @@ pub(crate) async fn ocr_and_merge_rendered(
         }
 
         let page = &mut pages[idx];
+        let skip_overlap_check = matches!(coord_map, OcrCoordMap::ImageRegion { .. });
+
         for r in &ocr_results {
             if r.confidence <= 0.1 {
                 continue;
             }
 
-            let ocr_x = r.bbox[0] * scale_factor;
-            let ocr_y = r.bbox[1] * scale_factor;
-            let ocr_w = (r.bbox[2] - r.bbox[0]) * scale_factor;
-            let ocr_h = (r.bbox[3] - r.bbox[1]) * scale_factor;
+            let (ocr_x, ocr_y, ocr_w, ocr_h) =
+                map_ocr_bbox_to_page(r.bbox, bitmap_width, bitmap_height, &coord_map);
 
-            if overlaps_existing_text(&page.text_items, ocr_x, ocr_y, ocr_w, ocr_h, 2.0) {
+            if !skip_overlap_check
+                && overlaps_existing_text(&page.text_items, ocr_x, ocr_y, ocr_w, ocr_h, 2.0)
+            {
                 continue;
             }
 
@@ -148,6 +196,43 @@ pub(crate) async fn ocr_and_merge_rendered(
     }
 
     Ok(())
+}
+
+fn map_ocr_bbox_to_page(
+    bbox: [f32; 4],
+    bitmap_width: u32,
+    bitmap_height: u32,
+    coord_map: &OcrCoordMap,
+) -> (f32, f32, f32, f32) {
+    match coord_map {
+        OcrCoordMap::FullPage { dpi } => {
+            let scale = 72.0 / dpi;
+            (
+                bbox[0] * scale,
+                bbox[1] * scale,
+                (bbox[2] - bbox[0]) * scale,
+                (bbox[3] - bbox[1]) * scale,
+            )
+        }
+        OcrCoordMap::ImageRegion {
+            page_x,
+            page_y,
+            page_w,
+            page_h,
+        } => {
+            if bitmap_width == 0 || bitmap_height == 0 {
+                return (0.0, 0.0, 0.0, 0.0);
+            }
+            let sx = page_w / bitmap_width as f32;
+            let sy = page_h / bitmap_height as f32;
+            (
+                page_x + bbox[0] * sx,
+                page_y + bbox[1] * sy,
+                (bbox[2] - bbox[0]) * sx,
+                (bbox[3] - bbox[1]) * sy,
+            )
+        }
+    }
 }
 
 /// Check if an OCR bounding box overlaps with any existing text item.
@@ -264,5 +349,31 @@ mod tests {
     fn test_clean_ocr_keeps_whitespace_trimmed() {
         assert_eq!(clean_ocr_table_artifacts("   "), "");
         assert_eq!(clean_ocr_table_artifacts(" 123 "), "123");
+    }
+
+    #[test]
+    fn test_map_ocr_bbox_full_page() {
+        let map = OcrCoordMap::FullPage { dpi: 150.0 };
+        let (x, y, w, h) = map_ocr_bbox_to_page([30.0, 60.0, 90.0, 120.0], 1000, 1000, &map);
+        let scale = 72.0 / 150.0;
+        assert!((x - 30.0 * scale).abs() < 1e-5);
+        assert!((y - 60.0 * scale).abs() < 1e-5);
+        assert!((w - 60.0 * scale).abs() < 1e-5);
+        assert!((h - 60.0 * scale).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_map_ocr_bbox_image_region() {
+        let map = OcrCoordMap::ImageRegion {
+            page_x: 100.0,
+            page_y: 50.0,
+            page_w: 200.0,
+            page_h: 100.0,
+        };
+        let (x, y, w, h) = map_ocr_bbox_to_page([10.0, 20.0, 110.0, 70.0], 200, 100, &map);
+        assert!((x - 110.0).abs() < 1e-5);
+        assert!((y - 70.0).abs() < 1e-5);
+        assert!((w - 100.0).abs() < 1e-5);
+        assert!((h - 50.0).abs() < 1e-5);
     }
 }
