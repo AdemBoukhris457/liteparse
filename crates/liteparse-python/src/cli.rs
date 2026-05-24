@@ -113,6 +113,8 @@ struct ExtractCommand {
     pdf_path: String,
     #[arg(long)]
     page_num: Option<u32>,
+    #[arg(long)]
+    password: Option<String>,
 }
 
 fn parse_output_format(s: &str) -> Result<OutputFormat, String> {
@@ -304,10 +306,10 @@ pub fn run_cli(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Extract(cmd) => {
-            extract::extract(&cmd.pdf_path, cmd.page_num)?;
+            extract::extract(&cmd.pdf_path, cmd.page_num, cmd.password.as_deref())?;
         }
         Commands::ImageBounds(cmd) => {
-            render::image_bounds(&cmd.pdf_path, cmd.page_num)?;
+            render::image_bounds(&cmd.pdf_path, cmd.page_num, cmd.password.as_deref())?;
         }
     }
 
