@@ -332,6 +332,84 @@ pub async fn find_libre_office_command() -> Option<String> {
     None
 }
 
+/// Find unoconv — used for password-protected Office documents because
+/// `soffice --convert-to` has no supported CLI flag for document open passwords.
+async fn find_unoconv_command() -> Option<String> {
+    if is_command_available("unoconv").await || is_command_available_windows("unoconv").await {
+        return Some("unoconv".to_string());
+    }
+    None
+}
+
+fn expected_office_pdf_path(file_path: &str, output_dir: &str) -> Result<String, LiteParseError> {
+    let base_name = Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| LiteParseError::Conversion(format!("invalid file path: {file_path}")))?;
+    Ok(Path::new(output_dir)
+        .join(format!("{base_name}.pdf"))
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// Convert password-protected office documents via unoconv, which supplies the
+/// document password through LibreOffice's UNO `Password` load property.
+async fn convert_office_document_with_unoconv(
+    file_path: &str,
+    output_dir: &str,
+    password: &str,
+) -> Result<String, LiteParseError> {
+    let unoconv_cmd = find_unoconv_command().await.ok_or_else(|| {
+        LiteParseError::Conversion(
+            "Password-protected Office documents require unoconv for conversion. \
+             Install unoconv (e.g. apt-get install unoconv, brew install unoconv) \
+             or decrypt the document before parsing."
+                .into(),
+        )
+    })?;
+
+    if find_libre_office_command().await.is_none() {
+        return Err(LiteParseError::Conversion(
+            "LibreOffice is not installed. unoconv requires LibreOffice to convert office documents. \
+             On macOS: brew install --cask libreoffice, On Ubuntu: apt-get install libreoffice, \
+             On Windows: choco install libreoffice-fresh".into(),
+        ));
+    }
+
+    let user_profile_dir = tempfile::Builder::new()
+        .prefix("liteparse-unoconv-profile-")
+        .tempdir()?;
+    let password_arg = format!("--password={password}");
+    let profile_arg = format!(
+        "--user-profile={}",
+        user_profile_dir.path().to_string_lossy()
+    );
+
+    execute_command(
+        &unoconv_cmd,
+        vec![
+            "-f",
+            "pdf",
+            &password_arg,
+            &profile_arg,
+            "-o",
+            output_dir,
+            file_path,
+        ],
+        120_000,
+    )
+    .await?;
+
+    let pdf_path = expected_office_pdf_path(file_path, output_dir)?;
+    if tokio::fs::metadata(&pdf_path).await.is_ok() {
+        Ok(pdf_path)
+    } else {
+        Err(LiteParseError::Conversion(
+            "Office document conversion failed: output PDF not found (check the password)".into(),
+        ))
+    }
+}
+
 /// Find ImageMagick command - handles v6 (`convert`) and v7 (`magick`).
 pub async fn find_image_magick_command() -> Option<ResolvedCommand> {
     if let Some(cmd) = resolve_image_magick_command("magick").await {
@@ -346,6 +424,10 @@ pub async fn convert_office_document(
     output_dir: &str,
     password: Option<&str>,
 ) -> Result<String, LiteParseError> {
+    if let Some(password) = password {
+        return convert_office_document_with_unoconv(file_path, output_dir, password).await;
+    }
+
     let libre_office_cmd = find_libre_office_command().await.ok_or_else(|| {
         LiteParseError::Conversion(
             "LibreOffice is not installed. Please install LibreOffice to convert office documents. \
@@ -364,8 +446,7 @@ pub async fn convert_office_document(
         "-env:UserInstallation=file://{}",
         user_profile_dir.path().to_string_lossy()
     );
-    let infilter_arg;
-    let mut args: Vec<&str> = vec![
+    let args: Vec<&str> = vec![
         &user_profile_url,
         "--headless",
         "--invisible",
@@ -373,23 +454,12 @@ pub async fn convert_office_document(
         "pdf",
         "--outdir",
         output_dir,
+        file_path,
     ];
-    if let Some(pw) = password {
-        infilter_arg = format!("--infilter=:{pw}");
-        args.push(&infilter_arg);
-    }
-    args.push(file_path);
 
     execute_command(&libre_office_cmd, args, 120_000).await?;
 
-    let base_name = Path::new(file_path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| LiteParseError::Conversion(format!("invalid file path: {file_path}")))?;
-    let pdf_path = Path::new(output_dir)
-        .join(format!("{base_name}.pdf"))
-        .to_string_lossy()
-        .to_string();
+    let pdf_path = expected_office_pdf_path(file_path, output_dir)?;
 
     if tokio::fs::metadata(&pdf_path).await.is_ok() {
         Ok(pdf_path)
@@ -592,6 +662,23 @@ mod tests {
     #[tokio::test]
     async fn test_is_path_executable_nonexistent() {
         assert!(!is_path_executable("/no/such/path/zzz").await);
+    }
+
+    #[test]
+    fn test_expected_office_pdf_path() {
+        let path = expected_office_pdf_path("/tmp/report.docx", "/tmp/out").unwrap();
+        assert!(path.ends_with("report.pdf"));
+    }
+
+    #[tokio::test]
+    async fn test_convert_office_document_password_requires_unoconv() {
+        if find_unoconv_command().await.is_some() {
+            return;
+        }
+        let err = convert_office_document("/tmp/fake.docx", "/tmp", Some("secret"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unoconv"));
     }
 
     #[tokio::test]
