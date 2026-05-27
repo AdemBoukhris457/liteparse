@@ -22,7 +22,7 @@ fn main() {
         )
     });
 
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let _target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
@@ -44,28 +44,11 @@ fn main() {
         println!("cargo:rustc-link-lib=static=wasi-emulated-signal");
         println!("cargo:lib_path={}", lib_dir.display());
     } else {
-        // On Windows MSVC the import library is named `pdfium.dll.lib`, so
-        // we must pass `pdfium.dll` as the lib name (the linker appends `.lib`).
-        if target_os == "windows" {
-            println!("cargo:rustc-link-lib=dylib=pdfium.dll");
-        } else {
-            println!("cargo:rustc-link-lib=dylib=pdfium");
-        }
+        // Non-wasm: pdfium is loaded at runtime via libloading (no link-time
+        // dynamic dependency). We bake the lib directory path into the binary
+        // so the runtime loader knows where to find the shared library.
         println!("cargo:lib_path={}", lib_dir.display());
-
-        // Copy the dylib into OUT_DIR so it's on the rpath that cargo sets
-        // for crates with `links = ...`. This is needed on macOS where the
-        // dylib's install name is @rpath/libpdfium.dylib.
-        // On Windows the DLL lives in bin/, not lib/.
-        let dll_dir = if target_os == "windows" {
-            lib_dir
-                .parent()
-                .map(|p| p.join("bin"))
-                .unwrap_or(lib_dir.clone())
-        } else {
-            lib_dir.clone()
-        };
-        copy_dylib_to_target_deps(&dll_dir);
+        println!("cargo:rustc-env=PDFIUM_LIB_DIR={}", lib_dir.display());
     }
 
     run_bindgen(&include_dir);
@@ -211,41 +194,6 @@ fn fix_dylib_install_name(dir: &Path) {
         Ok(s) if s.success() => {}
         Ok(s) => eprintln!("pdfium-sys: install_name_tool exited with {s}"),
         Err(e) => eprintln!("pdfium-sys: failed to run install_name_tool: {e}"),
-    }
-}
-
-/// Copy the pdfium shared library into `target/<profile>/deps/` so the
-/// runtime dynamic linker can find it. Cargo includes this directory in
-/// the rpath of test and binary artifacts.
-fn copy_dylib_to_target_deps(lib_dir: &Path) {
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-
-    let dylib_name = match target_os.as_str() {
-        "macos" => "libpdfium.dylib",
-        "windows" => "pdfium.dll",
-        _ => "libpdfium.so",
-    };
-
-    let src = lib_dir.join(dylib_name);
-    if !src.exists() {
-        return;
-    }
-
-    // OUT_DIR is typically target/<profile>/build/<pkg>-<hash>/out
-    // We want target/<profile>/deps which is 3 levels up then into deps
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    if let Some(build_dir) = out_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-    {
-        let deps_dir = build_dir.join("deps");
-        if deps_dir.is_dir() {
-            let dst = deps_dir.join(dylib_name);
-            fs::copy(&src, &dst).unwrap_or_else(|e| {
-                panic!("failed to copy {} to {}: {e}", src.display(), dst.display())
-            });
-        }
     }
 }
 
