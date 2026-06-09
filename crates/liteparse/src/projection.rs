@@ -695,7 +695,33 @@ fn form_lines(
                 let y_diff = (item.item.y - prev.item.y).abs();
                 let y_compatible = y_diff <= 1.5;
 
-                if y_compatible && !both_are_numbers && delta_x <= MERGE_THRESHOLD {
+                // Word-boundary guard: when prev ends with an alphabetic
+                // character and item starts with one, a positive delta_x is
+                // very likely a missing-space gap (PDFium omitted the space
+                // glyph between two words), not a deliberate silent join.
+                // Silent-merging here fuses "of the" → "ofthe". Skip the
+                // silent path so the items stay separate and the line
+                // builder inserts a space based on `gap > space_threshold`.
+                // Punctuation joins (`Standards`+`.`, `width`+`)`, etc.)
+                // and overlapping/negative-gap merges still go through.
+                let alpha_alpha_gap = delta_x > 0.0
+                    && prev
+                        .item
+                        .text
+                        .chars()
+                        .last()
+                        .is_some_and(|c| c.is_alphabetic())
+                    && item
+                        .item
+                        .text
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_alphabetic());
+                if y_compatible
+                    && !both_are_numbers
+                    && !alpha_alpha_gap
+                    && delta_x <= MERGE_THRESHOLD
+                {
                     prev.item.width = item.item.x + item.item.width - prev.item.x;
                     prev.item.text.push_str(&item.item.text);
                     continue;
@@ -3518,13 +3544,25 @@ fn xy_find_column_cut(
                 }
                 kk = jj;
             }
-            // Use a band-count-weighted average of per-column fills rather
-            // than the min. The min is brittle to one column having very
-            // few bands (e.g. a page-bottom region where only 1-2 columns
-            // continue) — that column's low fill drags the gate even when
-            // the dominant columns are clearly prose. A real table has
-            // uniformly low fills across all columns, so weighted-avg
-            // still rejects it. min_fill is kept for diagnostics.
+            // Two-part gate that distinguishes prose columns from tables:
+            //
+            //   1. min_fill floor (MIN_FILL_HARD_FLOOR = 0.38) — rejects
+            //      pages where any column has narrow text in many bands
+            //      (e.g. table with numeric column). Real tables have
+            //      at least one column with fill ≤ 0.36 (verified on
+            //      Coca Cola 10-k page 1, Apple 10-k page 1, BRWS, SERFF,
+            //      Goldman Sachs, etc.).
+            //   2. Band-count-weighted avg_fill ≥ XY_COLUMN_MIN_FILL —
+            //      catches table layouts where ALL columns are uniformly
+            //      narrow (no column dominates the weighted average).
+            //
+            // Both must pass. The min-only gate was too brittle: a real
+            // 3-column prose page with one page-bottom column having ~4
+            // bands of short text dragged the min below 0.55 even though
+            // every meaningful column was clearly prose. The avg-only
+            // gate let through tables where the narrow column had enough
+            // bands to be informative but its weight was diluted by
+            // wider neighboring columns.
             let mut min_fill = f32::INFINITY;
             let mut weighted_sum = 0.0f32;
             let mut weighted_n = 0.0f32;
@@ -3557,6 +3595,10 @@ fn xy_find_column_cut(
                         .collect::<Vec<_>>()
                         .join(",")
                 );
+            }
+            const MIN_FILL_HARD_FLOOR: f32 = 0.38;
+            if min_fill.is_finite() && min_fill < MIN_FILL_HARD_FLOOR {
+                reject!("N-column min fill {min_fill:.2} < {MIN_FILL_HARD_FLOOR} (tabular column)");
             }
             if avg_fill.is_finite() && avg_fill < XY_COLUMN_MIN_FILL {
                 reject!(
