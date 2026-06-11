@@ -2929,7 +2929,11 @@ const XY_MIN_V_VALLEY_PT: f32 = 8.0;
 /// the median line height.
 const XY_MIN_H_VALLEY_FACTOR: f32 = 1.4;
 /// Hard recursion cap.
-const XY_MAX_DEPTH: u32 = 6;
+// Backstop only — every cut still passes the banner/density/histogram gates.
+// 6 starved pages with several stacked floats (tables + captions above a
+// 2-col body): each banner peel burns a level, and the body band leafs out
+// un-split at the cap.
+const XY_MAX_DEPTH: u32 = 12;
 /// Below this item count we stop trying to cut.
 const XY_MIN_ITEMS_TO_CUT: usize = 4;
 /// A horizontal cut must leave at least this many distinct text lines on each
@@ -3343,6 +3347,14 @@ fn xy_find_column_cut(
     });
 
     let mut line_starts: Vec<f32> = Vec::with_capacity(idxs.len() / 2);
+    // Items whose gap to the previous item falls just under `gutter_gap` but
+    // clearly above word-gap range. A tight column gutter (e.g. ~9pt at
+    // median_h=10) fails the strict test on justified lines whose left column
+    // runs right up to the gutter; these get a second chance below if their x
+    // aligns with a column peak that has strict evidence.
+    let mut near_starts: Vec<f32> = Vec::new();
+    let near_gap_floor = gutter_gap * 0.6;
+    let disable_rescue = std::env::var("LITEPARSE_DISABLE_NEARSTART_RESCUE").is_ok();
     let mut k = 0;
     while k < sorted.len() {
         let band_y = items[sorted[k]].item.y;
@@ -3355,8 +3367,13 @@ fn xy_find_column_cut(
         let mut prev_right = f32::NEG_INFINITY;
         for &idx in &band_items {
             let it = &items[idx].item;
-            if it.x.is_finite() && it.x - prev_right > gutter_gap {
-                line_starts.push(it.x);
+            if it.x.is_finite() {
+                let gap = it.x - prev_right;
+                if gap > gutter_gap {
+                    line_starts.push(it.x);
+                } else if gap > near_gap_floor {
+                    near_starts.push(it.x);
+                }
             }
             let right = it.x + it.width.max(0.0);
             if right > prev_right {
@@ -3400,6 +3417,39 @@ fn xy_find_column_cut(
             hist[b] += 1;
         }
     }
+
+    // Peak-aligned rescue for tight gutters: a near-gap start only counts
+    // when it lands at (nearly) the same x as existing strict-evidence
+    // starts. A column left edge aligns to sub-point precision across
+    // bands; word-gap "rivers" in justified text jitter by several points —
+    // a looser bucket-width match here let rivers stack onto stray strict
+    // starts and manufacture a fake second column inside narrow justified
+    // prose. Require near-exact agreement with at least 2 strict starts.
+    let mut rescued = 0usize;
+    let mut counted_starts: Vec<f32> = line_starts.clone();
+    if !near_starts.is_empty() && !disable_rescue {
+        const RESCUE_ALIGN_TOL_PT: f32 = 1.5;
+        for &x in &near_starts {
+            let support = line_starts
+                .iter()
+                .filter(|&&s| (s - x).abs() <= RESCUE_ALIGN_TOL_PT)
+                .count();
+            if support >= 2 {
+                let b = (((x - min_x) / bucket_pt).floor()).max(0.0) as usize;
+                if b < n_buckets {
+                    hist[b] += 1;
+                    rescued += 1;
+                    counted_starts.push(x);
+                }
+            }
+        }
+        if dbg && rescued > 0 {
+            eprintln!(
+                "[xy col-rescue] {rescued} near-gap starts (gap in [{near_gap_floor:.1},{gutter_gap:.1}]) exactly aligned to >=2 strict starts"
+            );
+        }
+    }
+    let n_starts = line_starts.len() + rescued;
 
     // Cluster adjacent occupied buckets into peaks. A peak is a contiguous
     // run of buckets with ≥1 count, merged through gaps of ≤2 zero buckets
@@ -3446,7 +3496,7 @@ fn xy_find_column_cut(
     // out the tiny indent peaks, but a 2-column region with ~5 lines/peak now
     // qualifies. Capped by the original `XY_COLUMN_MIN_LINES_PER_PEAK` to
     // preserve behavior on large regions.
-    let adaptive_min = (line_starts.len() / 6).clamp(4, XY_COLUMN_MIN_LINES_PER_PEAK);
+    let adaptive_min = (n_starts / 6).clamp(4, XY_COLUMN_MIN_LINES_PER_PEAK);
     peaks.retain(|(_, c)| *c >= adaptive_min);
     if peaks.len() < 2 {
         if dbg {
@@ -3502,113 +3552,6 @@ fn xy_find_column_cut(
             if peaks.len() < 2 {
                 reject!("peaks>2 but <2 balanced (largest={largest})");
             }
-            // Fill-density gate: prose columns fill each inter-peak slot
-            // nearly edge-to-edge; table cells leave wide whitespace. Per
-            // band, measure each column's covered span / slot width; if the
-            // least-filled column is too sparse, treat as a table and bail.
-            let n = peaks.len();
-            let mut covered_sum = vec![0.0f32; n];
-            let mut band_count = vec![0usize; n];
-            let mut kk = 0;
-            while kk < sorted.len() {
-                let by = items[sorted[kk]].item.y;
-                let mut jj = kk;
-                while jj < sorted.len() && (items[sorted[jj]].item.y - by).abs() <= band_tol {
-                    jj += 1;
-                }
-                let mut lo_x = vec![f32::INFINITY; n];
-                let mut hi_x = vec![f32::NEG_INFINITY; n];
-                for &idx in &sorted[kk..jj] {
-                    let it = &items[idx].item;
-                    if !it.x.is_finite() {
-                        continue;
-                    }
-                    let mut c = 0;
-                    while c + 1 < n && it.x >= peaks[c + 1].0 {
-                        c += 1;
-                    }
-                    lo_x[c] = lo_x[c].min(it.x);
-                    hi_x[c] = hi_x[c].max(it.x + it.width.max(0.0));
-                }
-                for c in 0..n {
-                    if hi_x[c] > lo_x[c] {
-                        let col_w = if c + 1 < n {
-                            peaks[c + 1].0 - peaks[c].0
-                        } else {
-                            max_x - peaks[c].0
-                        };
-                        if col_w > 1.0 {
-                            covered_sum[c] += ((hi_x[c] - lo_x[c]) / col_w).min(1.0);
-                            band_count[c] += 1;
-                        }
-                    }
-                }
-                kk = jj;
-            }
-            // Two-part gate that distinguishes prose columns from tables:
-            //
-            //   1. min_fill floor (MIN_FILL_HARD_FLOOR = 0.38) — rejects
-            //      pages where any column has narrow text in many bands
-            //      (e.g. table with numeric column). Real tables have
-            //      at least one column with fill ≤ 0.36 (verified on
-            //      Coca Cola 10-k page 1, Apple 10-k page 1, BRWS, SERFF,
-            //      Goldman Sachs, etc.).
-            //   2. Band-count-weighted avg_fill ≥ XY_COLUMN_MIN_FILL —
-            //      catches table layouts where ALL columns are uniformly
-            //      narrow (no column dominates the weighted average).
-            //
-            // Both must pass. The min-only gate was too brittle: a real
-            // 3-column prose page with one page-bottom column having ~4
-            // bands of short text dragged the min below 0.55 even though
-            // every meaningful column was clearly prose. The avg-only
-            // gate let through tables where the narrow column had enough
-            // bands to be informative but its weight was diluted by
-            // wider neighboring columns.
-            let mut min_fill = f32::INFINITY;
-            let mut weighted_sum = 0.0f32;
-            let mut weighted_n = 0.0f32;
-            let mut per_col_fill: Vec<f32> = Vec::with_capacity(n);
-            for c in 0..n {
-                if band_count[c] > 0 {
-                    let f = covered_sum[c] / band_count[c] as f32;
-                    per_col_fill.push(f);
-                    min_fill = min_fill.min(f);
-                    weighted_sum += f * band_count[c] as f32;
-                    weighted_n += band_count[c] as f32;
-                }
-            }
-            let avg_fill = if weighted_n > 0.0 {
-                weighted_sum / weighted_n
-            } else {
-                f32::INFINITY
-            };
-            if dbg {
-                eprintln!(
-                    "[xy col-fill] avg_fill={avg_fill:.2} min_fill={min_fill:.2} (gate={XY_COLUMN_MIN_FILL}) per_col=[{}] band_counts=[{}]",
-                    per_col_fill
-                        .iter()
-                        .map(|f| format!("{f:.2}"))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    band_count
-                        .iter()
-                        .map(|c| c.to_string())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                );
-            }
-            const MIN_FILL_HARD_FLOOR: f32 = 0.38;
-            if min_fill.is_finite() && min_fill < MIN_FILL_HARD_FLOOR {
-                *tabular = true;
-                reject!("N-column min fill {min_fill:.2} < {MIN_FILL_HARD_FLOOR} (tabular column)");
-            }
-            if avg_fill.is_finite() && avg_fill < XY_COLUMN_MIN_FILL {
-                *tabular = true;
-                reject!(
-                    "N-column avg fill {avg_fill:.2} < {} (tabular)",
-                    XY_COLUMN_MIN_FILL
-                );
-            }
             if dbg {
                 eprintln!(
                     "[xy col-keep-N] kept {} of {} balanced peaks (N-column); xs=[{}]",
@@ -3639,17 +3582,138 @@ fn xy_find_column_cut(
             peaks = top2;
         }
     }
+    // Fill-density gate: prose columns fill each inter-peak slot nearly
+    // edge-to-edge; table cells leave wide whitespace. Applies to ALL peak
+    // counts including 2 — a 2-col label/value table (description list)
+    // produces the same two left-edge peaks as 2-col prose, and slicing it
+    // strands each half in its own leaf where no table detector can see
+    // the rows whole. Per band, measure each column's covered span / slot
+    // width; if too sparse, treat as a table and bail.
+    {
+        let n = peaks.len();
+        let mut covered_sum = vec![0.0f32; n];
+        let mut band_count = vec![0usize; n];
+        let mut kk = 0;
+        while kk < sorted.len() {
+            let by = items[sorted[kk]].item.y;
+            let mut jj = kk;
+            while jj < sorted.len() && (items[sorted[jj]].item.y - by).abs() <= band_tol {
+                jj += 1;
+            }
+            let mut lo_x = vec![f32::INFINITY; n];
+            let mut hi_x = vec![f32::NEG_INFINITY; n];
+            for &idx in &sorted[kk..jj] {
+                let it = &items[idx].item;
+                if !it.x.is_finite() {
+                    continue;
+                }
+                // Peak centers are bucket-quantized, so a column's items can
+                // start up to a bucket left of its peak center; without the
+                // slack they all bin into the previous slot and that column
+                // reads as empty (its sparse cells never get fill-checked).
+                let mut c = 0;
+                while c + 1 < n && it.x >= peaks[c + 1].0 - bucket_pt {
+                    c += 1;
+                }
+                lo_x[c] = lo_x[c].min(it.x);
+                hi_x[c] = hi_x[c].max(it.x + it.width.max(0.0));
+            }
+            for c in 0..n {
+                if hi_x[c] > lo_x[c] {
+                    let col_w = if c + 1 < n {
+                        peaks[c + 1].0 - peaks[c].0
+                    } else {
+                        max_x - peaks[c].0
+                    };
+                    if col_w > 1.0 {
+                        covered_sum[c] += ((hi_x[c] - lo_x[c]) / col_w).min(1.0);
+                        band_count[c] += 1;
+                    }
+                }
+            }
+            kk = jj;
+        }
+        // Two-part gate that distinguishes prose columns from tables:
+        //
+        //   1. min_fill floor (MIN_FILL_HARD_FLOOR = 0.38) — rejects
+        //      pages where any column has narrow text in many bands
+        //      (e.g. table with numeric column). Real tables have
+        //      at least one column with fill ≤ 0.36 (verified on
+        //      Coca Cola 10-k page 1, Apple 10-k page 1, BRWS, SERFF,
+        //      Goldman Sachs, etc.).
+        //   2. Band-count-weighted avg_fill ≥ XY_COLUMN_MIN_FILL —
+        //      catches table layouts where ALL columns are uniformly
+        //      narrow (no column dominates the weighted average).
+        //
+        // Both must pass. The min-only gate was too brittle: a real
+        // 3-column prose page with one page-bottom column having ~4
+        // bands of short text dragged the min below 0.55 even though
+        // every meaningful column was clearly prose. The avg-only
+        // gate let through tables where the narrow column had enough
+        // bands to be informative but its weight was diluted by
+        // wider neighboring columns.
+        let mut min_fill = f32::INFINITY;
+        let mut weighted_sum = 0.0f32;
+        let mut weighted_n = 0.0f32;
+        let mut per_col_fill: Vec<f32> = Vec::with_capacity(n);
+        for c in 0..n {
+            if band_count[c] > 0 {
+                let f = covered_sum[c] / band_count[c] as f32;
+                per_col_fill.push(f);
+                min_fill = min_fill.min(f);
+                weighted_sum += f * band_count[c] as f32;
+                weighted_n += band_count[c] as f32;
+            }
+        }
+        let avg_fill = if weighted_n > 0.0 {
+            weighted_sum / weighted_n
+        } else {
+            f32::INFINITY
+        };
+        if dbg {
+            eprintln!(
+                "[xy col-fill] avg_fill={avg_fill:.2} min_fill={min_fill:.2} (gate={XY_COLUMN_MIN_FILL}) per_col=[{}] band_counts=[{}]",
+                per_col_fill
+                    .iter()
+                    .map(|f| format!("{f:.2}"))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                band_count
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+        const MIN_FILL_HARD_FLOOR: f32 = 0.38;
+        // The min-floor catches ≥3-col tables whose narrow numeric column is
+        // diluted out of the weighted average by wide neighbors. With only 2
+        // columns no dilution is possible — a sparse column of two drags the
+        // average itself — and a short second prose column (a page-bottom
+        // column with a few bands) would false-positive here, suppressing a
+        // needed column split AND the density V via the tabular flag.
+        if n > 2 && min_fill.is_finite() && min_fill < MIN_FILL_HARD_FLOOR {
+            *tabular = true;
+            reject!("N-column min fill {min_fill:.2} < {MIN_FILL_HARD_FLOOR} (tabular column)");
+        }
+        if avg_fill.is_finite() && avg_fill < XY_COLUMN_MIN_FILL {
+            *tabular = true;
+            reject!(
+                "N-column avg fill {avg_fill:.2} < {} (tabular)",
+                XY_COLUMN_MIN_FILL
+            );
+        }
+    }
     // Require the two peaks to together dominate the histogram — a real
     // 2-column layout has the great majority of items starting at one of
     // the two column-left edges. Tables, lists, and prose with scattered
     // indents distribute their item-starts across many x's and won't pass.
     let peak_sum: usize = peaks.iter().map(|(_, c)| *c).sum();
-    let dominance = (peak_sum as f32) / (line_starts.len() as f32);
+    let dominance = (peak_sum as f32) / (n_starts as f32);
     if dominance < XY_COLUMN_PEAK_DOMINANCE {
         reject!(
-            "dominance {dominance:.2} < {} (peak_sum={peak_sum} line_starts={})",
-            XY_COLUMN_PEAK_DOMINANCE,
-            line_starts.len()
+            "dominance {dominance:.2} < {} (peak_sum={peak_sum} line_starts={n_starts})",
+            XY_COLUMN_PEAK_DOMINANCE
         );
     }
     // Require the peaks to be roughly balanced in size. A real multi-column
@@ -3699,7 +3763,43 @@ fn xy_find_column_cut(
             peaks[1].0 - peaks[0].0
         ),
     };
-    let cut_x = (peaks[li].0 + peaks[li + 1].0) * 0.5;
+    // Place the cut at the actual gutter, not midway between peak centers.
+    // Peaks mark column LEFT edges, so the center midpoint lands inside the
+    // left column's text span and misroutes its mid-line items under
+    // partition_by_item. The gutter spans from the rightmost left-side item
+    // extent to the right column's leftmost counted start — NOT the peak
+    // center: a right-aligned numeric column scatters its starts left of
+    // the bucket-quantized center, and a cut placed at the center would
+    // route those values into the left column.
+    let mid_centers = (peaks[li].0 + peaks[li + 1].0) * 0.5;
+    let right_min_start = counted_starts
+        .iter()
+        .copied()
+        .filter(|&x| x > mid_centers)
+        .fold(f32::INFINITY, f32::min);
+    let boundary = if right_min_start.is_finite() {
+        right_min_start
+    } else {
+        peaks[li + 1].0
+    };
+    let mut gutter_left = f32::NEG_INFINITY;
+    for &i in idxs {
+        let it = &items[i].item;
+        if it.x.is_finite() {
+            let r = it.x + it.width.max(0.0);
+            if r <= boundary - 1.0 && r > gutter_left {
+                gutter_left = r;
+            }
+        }
+    }
+    let cut_x = if gutter_left.is_finite()
+        && gutter_left > peaks[li].0
+        && std::env::var("LITEPARSE_DISABLE_GUTTER_CUT").is_err()
+    {
+        (gutter_left + boundary) * 0.5
+    } else {
+        mid_centers
+    };
     // Validate cut lands inside the bbox; if bbox-clamping moved the bbox
     // off the items (some PDFs have content with negative x), fall back to
     // an item-relative midpoint check.
