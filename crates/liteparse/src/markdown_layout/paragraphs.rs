@@ -53,11 +53,40 @@ pub(super) fn collapse_whitespace(s: &str) -> String {
     out
 }
 
+/// True when `text` ends with a mid-word soft hyphen — a trailing `-` whose
+/// preceding character is a letter. Distinguishes a wrapped word (`architec-`)
+/// from a dangling list marker (`-`) or a numeric range (`5-`), neither of
+/// which should be rejoined. Unicode-aware, so accented stems (`café-`)
+/// qualify. Trims trailing whitespace first.
+///
+/// Single source of truth for the "ends open on a hyphen" test; the heading
+/// continuation guard, region stitching, and block joining all key off this.
+/// (Note: `stitch_regions` has an unrelated local `ends_open` that tests
+/// sentence-terminal punctuation — different concept, hence the distinct name.)
+pub(super) fn ends_hyphenated(text: &str) -> bool {
+    let t = text.trim_end();
+    t.ends_with('-') && t.chars().rev().nth(1).is_some_and(|c| c.is_alphabetic())
+}
+
+/// True when `prev` ends with a soft hyphen (see [`ends_hyphenated`]) and
+/// `next` begins with a lowercase letter — the signal that a single word was
+/// split across a line / block / region break and should be rejoined with the
+/// hyphen dropped and no separator (`architec-` + `ture` → `architecture`). A
+/// capitalized continuation (`well-` + `Known`) is left as a real compound.
+pub(super) fn is_soft_hyphen_break(prev: &str, next: &str) -> bool {
+    ends_hyphenated(prev)
+        && next
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_lowercase())
+}
+
 /// Append `to_append` onto `prev`, de-hyphenating across the boundary. When
-/// `prev` ends with `-` and `check` (the plain text of the continuation) starts
-/// with an ASCII lowercase letter, the trailing hyphen is dropped and the text
-/// concatenated directly (`co-` + `operate` → `cooperate`); otherwise the join
-/// is a single space.
+/// the boundary is a soft hyphen break (see [`is_soft_hyphen_break`], tested
+/// against `check` — the plain text of the continuation), the trailing hyphen
+/// is dropped and the text concatenated directly (`co-` + `operate` →
+/// `cooperate`); otherwise the join is a single space.
 ///
 /// `check` and `to_append` are separate so a caller tracking a styled `inline`
 /// representation can test the condition against the raw text while appending
@@ -70,9 +99,12 @@ pub(super) fn dehyphenate_join(prev: &mut String, check: &str, to_append: &str) 
         prev.push_str(to_append);
         return;
     }
-    if prev.ends_with('-') && check.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
-        prev.pop();
-        prev.push_str(to_append);
+    if is_soft_hyphen_break(prev, check) {
+        while prev.ends_with(|c: char| c.is_whitespace()) {
+            prev.pop();
+        }
+        prev.pop(); // the soft hyphen
+        prev.push_str(to_append.trim_start());
     } else {
         prev.push(' ');
         prev.push_str(to_append);

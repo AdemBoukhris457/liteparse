@@ -18,6 +18,19 @@ const TABLE_CELL_GAP_FONT_MULTIPLIER: f32 = 1.0;
 /// track when extending a candidate table run.
 const TABLE_TRACK_TOLERANCE_PT: f32 = 6.0;
 
+/// Minimum gap (in multiples of the dominant font size) required between two
+/// adjacent column tracks for them to count as distinct columns. The two
+/// callers — inferred-track detection and the ruled-grid track derivation —
+/// must use the same value or one stage can fuse columns the other split.
+const TABLE_MIN_TRACK_GAP_FONT_MULT: f32 = 1.5;
+/// Absolute floor (points) on the inter-track gap, paired with
+/// `TABLE_MIN_TRACK_GAP_FONT_MULT` so tiny-font pages keep a sane minimum.
+const TABLE_MIN_TRACK_GAP_FLOOR_PT: f32 = 12.0;
+
+/// Minimum fraction of a row's cells that must carry text for that row to
+/// anchor the header/body split in ruled-grid collapse.
+const TABLE_ROW_MIN_FILL: f32 = 0.9;
+
 /// Floor for the sparse-new-row path: a partial-cell line whose bottom-gap
 /// exceeds this fraction qualifies as a real new row (with empty cells at
 /// missing tracks) instead of being treated as a wrap continuation. Below
@@ -671,7 +684,8 @@ fn try_detect_table_inferred(
     } else {
         lines[start_idx].bbox.height.max(1.0)
     };
-    let min_track_gap = (font_size * 1.5).max(12.0);
+    let min_track_gap =
+        (font_size * TABLE_MIN_TRACK_GAP_FONT_MULT).max(TABLE_MIN_TRACK_GAP_FLOOR_PT);
     let min_gap = tracks
         .windows(2)
         .map(|w| w[1] - w[0])
@@ -858,9 +872,17 @@ fn try_detect_table(lines: &[ProjectedLine], start_idx: usize, floor: usize) -> 
             let line_height = prev_line.bbox.height.max(lines[j].bbox.height).max(1.0);
             let centroid_dy = lines[j].bbox.y - prev_y_top;
             let bottom_gap = lines[j].bbox.y - prev_bottom;
-            let all_align_track = cells
+            // Map each cell to its column track once. `match_track_idx`
+            // returns `Some` exactly when `cell_aligns_track` would return
+            // `true`, so `mapping.len() == cells.len()` is the same
+            // "every cell aligns to a track" predicate — and the mapping is
+            // already in hand for the paths below, no separate unwrap whose
+            // safety depends on the two functions staying in lockstep.
+            let mapping: Vec<usize> = cells
                 .iter()
-                .all(|c| track_ranges.iter().any(|r| cell_aligns_track(c, *r)));
+                .filter_map(|c| match_track_idx(c, &track_ranges))
+                .collect();
+            let all_align_track = mapping.len() == cells.len();
             // Sparse-new-row path runs FIRST. When the line sits a clear
             // inter-row gap below the previous row AND its cells map to
             // distinct tracks, treat it as a new row with empty cells at
@@ -871,10 +893,6 @@ fn try_detect_table(lines: &[ProjectedLine], start_idx: usize, floor: usize) -> 
                 && cells.len() >= 2
                 && bottom_gap >= line_height * TABLE_SPARSE_ROW_MIN_BOTTOM_GAP_FRAC
             {
-                let mapping: Vec<usize> = cells
-                    .iter()
-                    .map(|c| match_track_idx(c, &track_ranges).unwrap())
-                    .collect();
                 let mut distinct = mapping.clone();
                 distinct.sort_unstable();
                 distinct.dedup();
@@ -899,13 +917,11 @@ fn try_detect_table(lines: &[ProjectedLine], start_idx: usize, floor: usize) -> 
             // row, multi-line cell continuation.
             if centroid_dy <= line_height * 1.5 && all_align_track {
                 let prev_cells = &mut rows.last_mut().unwrap().2;
-                for c in &cells {
-                    if let Some(idx) = match_track_idx(c, &track_ranges) {
-                        if !prev_cells[idx].text.is_empty() && !c.text.is_empty() {
-                            prev_cells[idx].text.push(' ');
-                        }
-                        prev_cells[idx].text.push_str(&c.text);
+                for (c, &idx) in cells.iter().zip(&mapping) {
+                    if !prev_cells[idx].text.is_empty() && !c.text.is_empty() {
+                        prev_cells[idx].text.push(' ');
                     }
+                    prev_cells[idx].text.push_str(&c.text);
                 }
                 j += 1;
                 continue;
@@ -1896,7 +1912,8 @@ fn build_union_table(
         .collect();
     font_sizes.sort_by(f32::total_cmp);
     let median_font = font_sizes[font_sizes.len() / 2];
-    let min_track_gap = (median_font * 1.5).max(12.0);
+    let min_track_gap =
+        (median_font * TABLE_MIN_TRACK_GAP_FONT_MULT).max(TABLE_MIN_TRACK_GAP_FLOOR_PT);
     let mut coalesced: Vec<(f32, usize)> = Vec::with_capacity(supported.len());
     for (t, n) in supported {
         match coalesced.last_mut() {
@@ -2983,48 +3000,50 @@ fn build_ruled_table(
     let flattened_header: Option<(Vec<String>, usize)> = {
         let row_fill =
             |r: usize| cell_has_text[r].iter().filter(|t| **t).count() as f32 / n_cols as f32;
-        (0..n_rows).find(|r| row_fill(*r) >= 0.9).and_then(|b| {
-            let nonempty = cell_has_text[b].iter().filter(|t| **t).count();
-            let alpha_cells = (0..n_cols)
-                .filter(|c| cell_has_text[b][*c] && is_alpha_dominant(&cells[b][*c]))
-                .count();
-            // The bottom header layer may carry digit labels (years like
-            // "2024") but never measurement values. A decimal / % / $ /
-            // dash-placeholder / comma-grouped number in the anchor row means
-            // it's the first DATA row of a table whose real header just
-            // missed the 0.9-fill anchor (colspan header covering <90% of
-            // columns) — folding it would eat a data row (DS5795A_page4).
-            let has_value_cell =
-                (0..n_cols).any(|c| cell_has_text[b][c] && is_value_like(&cells[b][c]));
-            let qualifies = (1..=3).contains(&b)
-                && b + 1 < n_rows
-                && (0..b).any(|r| row_alpha_spanner[r])
-                && alpha_cells * 2 >= nonempty
-                && !has_value_cell;
-            if !qualifies {
-                return None;
-            }
-            let header: Vec<String> = (0..n_cols)
-                .map(|c| {
-                    let mut parts: Vec<&str> = Vec::new();
-                    for row in cells_repl.iter().take(b + 1) {
-                        let s = row[c].as_str();
-                        if s.is_empty() || parts.last() == Some(&s) {
-                            continue;
+        (0..n_rows)
+            .find(|r| row_fill(*r) >= TABLE_ROW_MIN_FILL)
+            .and_then(|b| {
+                let nonempty = cell_has_text[b].iter().filter(|t| **t).count();
+                let alpha_cells = (0..n_cols)
+                    .filter(|c| cell_has_text[b][*c] && is_alpha_dominant(&cells[b][*c]))
+                    .count();
+                // The bottom header layer may carry digit labels (years like
+                // "2024") but never measurement values. A decimal / % / $ /
+                // dash-placeholder / comma-grouped number in the anchor row means
+                // it's the first DATA row of a table whose real header just
+                // missed the 0.9-fill anchor (colspan header covering <90% of
+                // columns) — folding it would eat a data row (DS5795A_page4).
+                let has_value_cell =
+                    (0..n_cols).any(|c| cell_has_text[b][c] && is_value_like(&cells[b][c]));
+                let qualifies = (1..=3).contains(&b)
+                    && b + 1 < n_rows
+                    && (0..b).any(|r| row_alpha_spanner[r])
+                    && alpha_cells * 2 >= nonempty
+                    && !has_value_cell;
+                if !qualifies {
+                    return None;
+                }
+                let header: Vec<String> = (0..n_cols)
+                    .map(|c| {
+                        let mut parts: Vec<&str> = Vec::new();
+                        for row in cells_repl.iter().take(b + 1) {
+                            let s = row[c].as_str();
+                            if s.is_empty() || parts.last() == Some(&s) {
+                                continue;
+                            }
+                            parts.push(s);
                         }
-                        parts.push(s);
-                    }
-                    parts.join(" ")
-                })
-                .collect();
-            if header.iter().all(|h| h.is_empty()) {
-                return None;
-            }
-            if dbg {
-                eprintln!("[ruled]   colspan header flatten: rows 0..={b} -> {header:?}");
-            }
-            Some((header, b + 1))
-        })
+                        parts.join(" ")
+                    })
+                    .collect();
+                if header.iter().all(|h| h.is_empty()) {
+                    return None;
+                }
+                if dbg {
+                    eprintln!("[ruled]   colspan header flatten: rows 0..={b} -> {header:?}");
+                }
+                Some((header, b + 1))
+            })
     };
 
     // Stacked-header merge (Mode 5): some generators rule every text baseline
@@ -3039,7 +3058,7 @@ fn build_ruled_table(
         };
         // Anchor on the first fully-dense row (the first real data row).
         let k = (0..n_rows)
-            .find(|r| row_fill(*r, &cell_has_text) >= 0.9)
+            .find(|r| row_fill(*r, &cell_has_text) >= TABLE_ROW_MIN_FILL)
             .unwrap_or(0);
         let union_cols = (0..n_cols)
             .filter(|c| (0..k).any(|r| cell_has_text[r][*c]))

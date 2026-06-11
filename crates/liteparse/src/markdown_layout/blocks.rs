@@ -1,5 +1,5 @@
 use super::inline::escape_inline;
-use super::paragraphs::ParaAccum;
+use super::paragraphs::{ParaAccum, is_soft_hyphen_break};
 use super::tables::escape_table_cell;
 
 /// Coarse block representation: the output of page classification, consumed by
@@ -113,15 +113,12 @@ pub fn render_blocks(blocks: &[Block]) -> String {
                     italic: false,
                 },
             ) = (&blocks[i - 1], block)
-                && out.ends_with('-')
-                && out
-                    .chars()
-                    .rev()
-                    .nth(1)
-                    .is_some_and(|p| p.is_ascii_alphabetic())
-                && text.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                && is_soft_hyphen_break(&out, text)
             {
-                out.pop();
+                while out.ends_with(|c: char| c.is_whitespace()) {
+                    out.pop();
+                }
+                out.pop(); // the soft hyphen
                 out.push_str(text);
                 continue;
             }

@@ -24,5 +24,12 @@ pub use headings::{build_heading_map, compute_body_size};
 pub use repetition::{compute_header_footer_set, detect_single_page_chrome};
 pub use tables::detect_table_rects;
 
+/// Minimum plausible text-row height in points. Floors a `bbox.height` before
+/// it is multiplied into a band / tolerance window, so a degenerate near-zero
+/// glyph box can't collapse that window to nothing. Shared by the table
+/// HR-suppress headroom (`classify.rs`) and outline y-tolerance
+/// (`headings.rs`) so the two stay in sync.
+const MIN_ROW_HEIGHT_PT: f32 = 8.0;
+
 #[cfg(test)]
 pub(crate) mod test_helpers;

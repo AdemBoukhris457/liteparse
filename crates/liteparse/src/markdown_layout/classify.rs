@@ -13,6 +13,7 @@ use super::inline::{
 use super::lists::{LIST_INDENT_STEP_PT, parse_list_marker};
 use super::paragraphs::{
     ParaAccum, append_to_paragraph, collapse_whitespace, continues_heading, continues_paragraph,
+    ends_hyphenated, is_soft_hyphen_break,
 };
 use super::repetition::is_header_or_footer;
 use super::tables::{detect_ruled_tables, detect_tables, merge_table_runs};
@@ -452,7 +453,7 @@ fn classify_region(
         .iter()
         .map(|run| {
             let top_line = &lines[run.start];
-            let row_h = top_line.bbox.height.max(8.0);
+            let row_h = top_line.bbox.height.max(super::MIN_ROW_HEIGHT_PT);
             let top = top_line.bbox.y - row_h * TABLE_HR_SUPPRESS_HEADROOM_ROWS;
             let last = &lines[run.end.saturating_sub(1).max(run.start)];
             let bot = last.bbox.y + last.bbox.height;
@@ -621,10 +622,7 @@ fn classify_region(
             // line is its continuation regardless of capitalization
             // ("…SOLAR 10.7 Billion-" / "Parameter Model: We have…").
             let prev_hyphen_wrap = !*super::flags::DISABLE_HEADING_GUARDS
-                && prev.is_some_and(|p| {
-                    let t = p.text.trim_end();
-                    t.ends_with('-') && t.chars().rev().nth(1).is_some_and(|c| c.is_alphanumeric())
-                });
+                && prev.is_some_and(|p| ends_hyphenated(&p.text));
             !((starts_lower || prev_hyphen_wrap)
                 && prev.is_some_and(|p| continues_paragraph(p, line)))
         });
@@ -974,16 +972,9 @@ fn stitch_regions(blocks: Vec<Block>, region_starts: &[usize]) -> Vec<Block> {
                 .chars()
                 .next()
                 .is_some_and(|c| c.is_lowercase());
-            // Hyphen-splice path: bare `<letter>-` mid-word break across the
+            // Hyphen-splice path: a mid-word soft hyphen break across the
             // leaf boundary. Drop the hyphen, join with no separator.
-            let hyphen_splice = prev_trim.ends_with('-')
-                && prev_trim
-                    .chars()
-                    .rev()
-                    .nth(1)
-                    .is_some_and(|c| c.is_ascii_alphabetic())
-                && starts_lower;
-            if hyphen_splice {
+            if is_soft_hyphen_break(prev_text, cur_text) {
                 // Pop the trailing `-` (it may have whitespace after it from
                 // a previous trim, so re-trim).
                 while prev_text.ends_with(|c: char| c.is_whitespace()) {

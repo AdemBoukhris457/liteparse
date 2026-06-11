@@ -763,7 +763,7 @@ pub(super) fn outline_heading_level(
     if normalized_line.is_empty() {
         return None;
     }
-    let row_h = line.bbox.height.max(8.0);
+    let row_h = line.bbox.height.max(super::MIN_ROW_HEIGHT_PT);
     let y_tolerance = row_h * 1.5;
     for entry in outline {
         let normalized_title = normalize_outline_text(&entry.title);
