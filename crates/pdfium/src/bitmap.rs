@@ -137,6 +137,26 @@ impl<'lib> Bitmap<'lib> {
 
         rgb
     }
+
+    /// Convert the BGRA buffer to tightly-packed 8-bit grayscale (1 byte/px)
+    /// using Rec. 601 luma weights.
+    pub fn to_luma(&self) -> Vec<u8> {
+        let width = self.width() as usize;
+        let height = self.height() as usize;
+        let stride = self.stride() as usize;
+        let src = self.buffer();
+        let mut luma = Vec::with_capacity(width * height);
+
+        for y in 0..height {
+            let row = &src[y * stride..y * stride + width * 4];
+            for pixel in row.chunks_exact(4) {
+                let (b, g, r) = (pixel[0] as u32, pixel[1] as u32, pixel[2] as u32);
+                luma.push(((77 * r + 150 * g + 29 * b) >> 8) as u8);
+            }
+        }
+
+        luma
+    }
 }
 
 impl Drop for Bitmap<'_> {

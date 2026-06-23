@@ -17,7 +17,8 @@ const UNCOVERED_VECTOR_AREA_THRESHOLD: f32 = 400.0;
 /// Owned page bitmap prepared for OCR. Indices refer to positions in the `pages` slice.
 pub(crate) struct RenderedPage {
     pub idx: usize,
-    pub rgb_bytes: Vec<u8>,
+    /// Tightly-packed pixels: 1 byte/px (grayscale) or 3 (RGB).
+    pub pixels: Vec<u8>,
     pub width: u32,
     pub height: u32,
 }
@@ -30,6 +31,7 @@ pub(crate) fn render_pages_for_ocr(
     document: &Document,
     pages: &[Page],
     dpi: f32,
+    grayscale: bool,
 ) -> Result<Vec<RenderedPage>, LiteParseError> {
     let mut rendered = Vec::new();
     for (idx, page) in pages.iter().enumerate() {
@@ -87,13 +89,16 @@ pub(crate) fn render_pages_for_ocr(
         let bitmap = page_obj.render(dpi)?;
         let width = bitmap.width() as u32;
         let height = bitmap.height() as u32;
-        // RGB is what OCR consumes; converting straight from BGRA avoids an
-        // intermediate full-frame RGBA buffer per page.
-        let rgb_bytes = bitmap.to_rgb();
+        // Grayscale or RGB per the engine; see `OcrEngine::prefers_grayscale`.
+        let pixels = if grayscale {
+            bitmap.to_luma()
+        } else {
+            bitmap.to_rgb()
+        };
 
         rendered.push(RenderedPage {
             idx,
-            rgb_bytes,
+            pixels,
             width,
             height,
         });
@@ -149,7 +154,7 @@ pub(crate) async fn ocr_and_merge_rendered(
                 // leaving the rest of the pool free for the HTTP client's
                 // internal DNS resolution.
                 match tokio::task::spawn_blocking(move || {
-                    rt_handle.block_on(engine.recognize(&r.rgb_bytes, r.width, r.height, &options))
+                    rt_handle.block_on(engine.recognize(&r.pixels, r.width, r.height, &options))
                 })
                 .await
                 {
@@ -743,8 +748,8 @@ mod tests {
     fn make_rendered(idx: usize) -> RenderedPage {
         RenderedPage {
             idx,
-            // 1x1 RGB pixel; the engine never inspects it.
-            rgb_bytes: vec![0u8, 0u8, 0u8],
+            // 1x1 grayscale pixel; the engine never inspects it.
+            pixels: vec![0u8],
             width: 1,
             height: 1,
         }

@@ -128,49 +128,11 @@ impl LiteParse {
         // concurrently with other `LiteParse` calls.
         let password = self.config.password.as_deref();
         let render_images = matches!(self.config.image_mode, crate::config::ImageMode::Embed);
-        let (pages, ocr_rendered, outline, images) = {
-            let lib = Library::init();
-            let document = extract::load_document_from_input(&lib, &validated_input, password)?;
-            let outline = extract::extract_outline(&document);
-            let (pages, images) = extract::extract_pages_and_images(
-                &document,
-                target_pages.as_deref(),
-                self.config.max_pages,
-                render_images,
-                self.config.extract_links
-                    && self.config.output_format == crate::config::OutputFormat::Markdown,
-            )?;
-            let t_extract = web_time::Instant::now();
-            log(&format!(
-                "[liteparse] extract: {:.1}ms ({} pages)",
-                t_extract.duration_since(t0).as_secs_f64() * 1000.0,
-                pages.len()
-            ));
-            let rendered = if self.config.ocr_enabled {
-                let r = ocr_merge::render_pages_for_ocr(&document, &pages, self.config.dpi)?;
-                log(&format!(
-                    "[liteparse] ocr render: {:.1}ms ({} pages)",
-                    web_time::Instant::now()
-                        .duration_since(t_extract)
-                        .as_secs_f64()
-                        * 1000.0,
-                    r.len()
-                ));
-                r
-            } else {
-                Vec::new()
-            };
-            // `lib` is dropped here, releasing the PDFium lock.
-            (pages, rendered, outline, images)
-        };
-        let mut pages = pages;
-        let t1 = web_time::Instant::now();
 
-        // OCR pass
-        if self.config.ocr_enabled {
-            let engine: std::sync::Arc<dyn OcrEngine> = if let Some(e) =
-                self.ocr_engine_override.clone()
-            {
+        // Build the OCR engine up front so the renderer knows whether to emit a
+        // grayscale buffer (cheaper, for engines that binarize internally) or RGB.
+        let ocr_engine: Option<std::sync::Arc<dyn OcrEngine>> = if self.config.ocr_enabled {
+            Some(if let Some(e) = self.ocr_engine_override.clone() {
                 e
             } else {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -199,7 +161,57 @@ impl LiteParse {
                         "OCR enabled but no `ocrEngine` callback was provided (WASM builds have no built-in OCR engine)".into(),
                     );
                 }
+            })
+        } else {
+            None
+        };
+        let ocr_grayscale = ocr_engine.as_ref().is_some_and(|e| e.prefers_grayscale());
+
+        let (pages, ocr_rendered, outline, images) = {
+            let lib = Library::init();
+            let document = extract::load_document_from_input(&lib, &validated_input, password)?;
+            let outline = extract::extract_outline(&document);
+            let (pages, images) = extract::extract_pages_and_images(
+                &document,
+                target_pages.as_deref(),
+                self.config.max_pages,
+                render_images,
+                self.config.extract_links
+                    && self.config.output_format == crate::config::OutputFormat::Markdown,
+            )?;
+            let t_extract = web_time::Instant::now();
+            log(&format!(
+                "[liteparse] extract: {:.1}ms ({} pages)",
+                t_extract.duration_since(t0).as_secs_f64() * 1000.0,
+                pages.len()
+            ));
+            let rendered = if self.config.ocr_enabled {
+                let r = ocr_merge::render_pages_for_ocr(
+                    &document,
+                    &pages,
+                    self.config.dpi,
+                    ocr_grayscale,
+                )?;
+                log(&format!(
+                    "[liteparse] ocr render: {:.1}ms ({} pages)",
+                    web_time::Instant::now()
+                        .duration_since(t_extract)
+                        .as_secs_f64()
+                        * 1000.0,
+                    r.len()
+                ));
+                r
+            } else {
+                Vec::new()
             };
+            // `lib` is dropped here, releasing the PDFium lock.
+            (pages, rendered, outline, images)
+        };
+        let mut pages = pages;
+        let t1 = web_time::Instant::now();
+
+        // OCR pass (engine resolved before the render block above).
+        if let Some(engine) = ocr_engine {
             ocr_merge::ocr_and_merge_rendered(
                 &mut pages,
                 ocr_rendered,

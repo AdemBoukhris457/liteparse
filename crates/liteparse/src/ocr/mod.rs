@@ -37,6 +37,11 @@ pub struct OcrOptions {
 #[cfg(not(target_arch = "wasm32"))]
 pub trait OcrEngine: Send + Sync {
     fn name(&self) -> &str;
+    /// Whether this engine prefers a single-channel grayscale buffer: engines
+    /// that binarize internally (Tesseract) do; color-trained engines want RGB.
+    fn prefers_grayscale(&self) -> bool {
+        false
+    }
     fn recognize<'a, 'b: 'a, 'c: 'a>(
         &'a self,
         image_data: &'c [u8],
@@ -55,6 +60,11 @@ pub trait OcrEngine: Send + Sync {
 #[cfg(target_arch = "wasm32")]
 pub trait OcrEngine: Send + Sync {
     fn name(&self) -> &str;
+    /// Whether this engine prefers a single-channel grayscale buffer: engines
+    /// that binarize internally (Tesseract) do; color-trained engines want RGB.
+    fn prefers_grayscale(&self) -> bool {
+        false
+    }
     fn recognize<'a, 'b: 'a, 'c: 'a>(
         &'a self,
         image_data: &'c [u8],

@@ -42,6 +42,12 @@ impl OcrEngine for TesseractOcrEngine {
         "tesseract"
     }
 
+    // Tesseract binarizes internally (Leptonica/Otsu on luma), so a grayscale
+    // buffer is equivalent input at a third of the memory.
+    fn prefers_grayscale(&self) -> bool {
+        true
+    }
+
     fn recognize<'a, 'b: 'a, 'c: 'a>(
         &'a self,
         image_data: &'c [u8],
@@ -76,8 +82,12 @@ impl OcrEngine for TesseractOcrEngine {
             // uniform block of text and performs poorly on full-page layouts.
             api.set_page_seg_mode(TessPageSegMode::PSM_AUTO)?;
 
-            // Set image from raw RGB bytes (3 bytes per pixel)
-            let bytes_per_pixel = 3;
+            // Channels inferred from the buffer: 1 = grayscale, 3 = RGB.
+            let bytes_per_pixel = if width > 0 && height > 0 {
+                (image_data.len() / (width as usize * height as usize)).clamp(1, 4) as i32
+            } else {
+                3
+            };
             let bytes_per_line = width as i32 * bytes_per_pixel;
             api.set_image(
                 image_data,
