@@ -207,7 +207,6 @@ struct JsParsedPage<'a> {
     width: f32,
     height: f32,
     text: &'a str,
-    /// Per-page markdown; empty unless the parse ran with markdown output.
     markdown: &'a str,
     text_items: Vec<JsTextItem<'a>>,
 }

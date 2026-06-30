@@ -365,7 +365,6 @@ pub struct JsParsedPage {
     pub width: f64,
     pub height: f64,
     pub text: String,
-    /// Per-page markdown; empty unless the parse ran with markdown output.
     pub markdown: String,
     pub text_items: Vec<JsTextItem>,
 }

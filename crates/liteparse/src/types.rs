@@ -148,10 +148,6 @@ pub struct ParsedPage {
     pub page_width: f32,
     pub page_height: f32,
     pub text: String,
-    /// Per-page markdown, populated only when the parse runs with
-    /// `OutputFormat::Markdown`; empty otherwise. `text` is always the plain
-    /// projected layout, so this is the per-page counterpart to the document
-    /// markdown on `ParseResult.text`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub markdown: String,
     pub text_items: Vec<TextItem>,

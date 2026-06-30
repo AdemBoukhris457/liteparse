@@ -134,7 +134,6 @@ export interface ParsedPage {
   width: number;
   height: number;
   text: string;
-  /** Per-page markdown; empty unless parsed with `outputFormat: "markdown"`. */
   markdown: string;
   textItems: TextItem[];
 }

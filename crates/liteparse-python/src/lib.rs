@@ -130,7 +130,6 @@ struct PyParsedPage {
     height: f64,
     #[pyo3(get)]
     text: String,
-    /// Per-page markdown; empty unless the parse ran with markdown output.
     #[pyo3(get)]
     markdown: String,
     #[pyo3(get)]
