@@ -148,6 +148,8 @@ pub struct ParsedPage {
     pub page_width: f32,
     pub page_height: f32,
     pub text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub markdown: String,
     pub text_items: Vec<TextItem>,
     /// Per-line structural metadata used by the markdown emitter. Not part of
     /// the JSON/text outputs (consumed internally) so it is `#[serde(skip)]`.

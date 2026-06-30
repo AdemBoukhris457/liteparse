@@ -131,6 +131,8 @@ struct PyParsedPage {
     #[pyo3(get)]
     text: String,
     #[pyo3(get)]
+    markdown: String,
+    #[pyo3(get)]
     text_items: Vec<PyTextItem>,
 }
 
@@ -154,6 +156,7 @@ impl PyParsedPage {
             width: page.page_width as f64,
             height: page.page_height as f64,
             text: page.text,
+            markdown: page.markdown,
             text_items: page
                 .text_items
                 .into_iter()

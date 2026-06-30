@@ -134,6 +134,7 @@ export interface ParsedPage {
   width: number;
   height: number;
   text: string;
+  markdown: string;
   textItems: TextItem[];
 }
 
@@ -343,6 +344,7 @@ function toPage(p: NativeParsedPage): ParsedPage {
     width: p.width,
     height: p.height,
     text: p.text,
+    markdown: p.markdown,
     textItems: p.textItems.map(toTextItem),
   };
 }

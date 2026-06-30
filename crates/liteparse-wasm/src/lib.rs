@@ -207,6 +207,7 @@ struct JsParsedPage<'a> {
     width: f32,
     height: f32,
     text: &'a str,
+    markdown: &'a str,
     text_items: Vec<JsTextItem<'a>>,
 }
 
@@ -390,6 +391,7 @@ impl LiteParse {
                 width: p.page_width,
                 height: p.page_height,
                 text: &p.text,
+                markdown: &p.markdown,
                 text_items: p
                     .text_items
                     .iter()

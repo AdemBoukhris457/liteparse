@@ -365,6 +365,7 @@ pub struct JsParsedPage {
     pub width: f64,
     pub height: f64,
     pub text: String,
+    pub markdown: String,
     pub text_items: Vec<JsTextItem>,
 }
 
@@ -375,6 +376,7 @@ impl JsParsedPage {
             width: page.page_width as f64,
             height: page.page_height as f64,
             text: page.text.clone(),
+            markdown: page.markdown.clone(),
             text_items: page.text_items.iter().map(JsTextItem::from_rust).collect(),
         }
     }
