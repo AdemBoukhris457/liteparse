@@ -1,7 +1,7 @@
 use file_format::FileFormat;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use image::{DynamicImage, GenericImageView};
+use image::{DynamicImage, GenericImageView, ImageFormat};
 use resvg::tiny_skia::Pixmap;
 use resvg::usvg::{Options, Tree};
 use std::io::Write;
@@ -454,6 +454,123 @@ fn separate_rgb_and_alpha(img: DynamicImage) -> (Vec<u8>, Vec<u8>) {
     separate_rgb_and_alpha_from_rgba(rgba.as_raw())
 }
 
+/// PDF's default coordinate system is 72 points per inch. Images with no
+/// embedded DPI metadata are assumed to be at this resolution, matching
+/// ImageMagick's default behavior when converting images to PDF.
+const DEFAULT_IMAGE_DPI: f32 = 72.0;
+
+/// Read the pixel-density (DPI) metadata embedded in an image, if any.
+///
+/// This mirrors ImageMagick's behavior of sizing the resulting PDF page in
+/// points based on the image's physical resolution rather than its pixel
+/// dimensions.
+///
+/// Returns `(dpi_x, dpi_y)` in dots-per-inch, or `None` when the image has
+/// no density metadata or the format doesn't carry it. Only PNG and JPEG
+/// are inspected; other raster formats fall back to `DEFAULT_IMAGE_DPI`.
+fn read_image_dpi(data: &[u8]) -> Option<(f32, f32)> {
+    let format = image::guess_format(data).ok()?;
+    match format {
+        ImageFormat::Png => read_png_dpi(data),
+        ImageFormat::Jpeg => {
+            // The JPEG JFIF marker stores density and units (0=none/aspect,
+            // 1=DPI, 2=dots-per-cm). Parse it directly since `image` doesn't
+            // expose this. Scan segments up to the first SOF/EOI.
+            let mut i = 0usize;
+            if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+                return None;
+            }
+            i += 2;
+            while i + 4 <= data.len() {
+                if data[i] != 0xFF {
+                    return None;
+                }
+                let marker = data[i + 1];
+                i += 2;
+                // Standalone markers with no length field.
+                if marker == 0xD8 || marker == 0xD9 || (0xD0..=0xD7).contains(&marker) {
+                    continue;
+                }
+                if i + 2 > data.len() {
+                    return None;
+                }
+                let seg_len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+                if seg_len < 2 || i + seg_len > data.len() {
+                    return None;
+                }
+                // APP0 with "JFIF\0" identifier carries the density fields.
+                if marker == 0xE0 && seg_len >= 16 && &data[i + 2..i + 7] == b"JFIF\0" {
+                    let units = data[i + 9];
+                    let x_density = u16::from_be_bytes([data[i + 10], data[i + 11]]) as f32;
+                    let y_density = u16::from_be_bytes([data[i + 12], data[i + 13]]) as f32;
+                    return match units {
+                        1 if x_density > 1.0 && y_density > 1.0 => Some((x_density, y_density)),
+                        2 if x_density > 1.0 && y_density > 1.0 => {
+                            // dots-per-cm → dots-per-inch
+                            Some((x_density * 2.54, y_density * 2.54))
+                        }
+                        _ => None,
+                    };
+                }
+                i += seg_len;
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Parse the PNG `pHYs` chunk (pixels-per-unit + unit specifier) to derive DPI.
+///
+/// Layout: 8-byte signature, then repeating chunks of
+/// `[len:u32 be][type:4 bytes][data:len bytes][crc:u32]`. We scan for `pHYs`
+/// (which must appear before IDAT per spec) and stop at IDAT/IEND. Its 9-byte
+/// payload is `ppu_x:u32, ppu_y:u32, unit:u8` where unit 1 = meter and unit 0
+/// = unspecified (aspect ratio only, not convertible to DPI).
+fn read_png_dpi(data: &[u8]) -> Option<(f32, f32)> {
+    const PNG_SIG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if data.len() < PNG_SIG.len() + 12 || &data[..PNG_SIG.len()] != PNG_SIG {
+        return None;
+    }
+    let mut i = PNG_SIG.len();
+    while i + 12 <= data.len() {
+        let len = u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
+        let ty = &data[i + 4..i + 8];
+        let body = i + 8;
+        if body + len + 4 > data.len() {
+            return None;
+        }
+        if ty == b"pHYs" && len == 9 {
+            let ppu_x =
+                u32::from_be_bytes([data[body], data[body + 1], data[body + 2], data[body + 3]]);
+            let ppu_y = u32::from_be_bytes([
+                data[body + 4],
+                data[body + 5],
+                data[body + 6],
+                data[body + 7],
+            ]);
+            let unit = data[body + 8];
+            // Unit 1 = meter; unit 0 = aspect-ratio only (no physical scale).
+            if unit != 1 {
+                return None;
+            }
+            // pixels-per-meter → pixels-per-inch (1 inch = 0.0254 m)
+            let dpi_x = ppu_x as f32 * 0.0254;
+            let dpi_y = ppu_y as f32 * 0.0254;
+            if dpi_x > 1.0 && dpi_y > 1.0 {
+                return Some((dpi_x, dpi_y));
+            }
+            return None;
+        }
+        // pHYs must precede IDAT per spec; stop early once we hit image data.
+        if ty == b"IDAT" || ty == b"IEND" {
+            return None;
+        }
+        i = body + len + 4; // skip payload + CRC
+    }
+    None
+}
+
 /// Rasterizes an SVG file to RGBA8 bytes + dimensions using resvg.
 fn rasterize_svg(data: &[u8]) -> Result<(Vec<u8>, u32, u32), LiteParseError> {
     let opt = Options::default();
@@ -500,16 +617,33 @@ pub async fn convert_image_to_pdf(
         .map(|e| e.eq_ignore_ascii_case("svg"))
         .unwrap_or(false);
 
-    let (width, height, rgb_img, mask_img) = if is_svg {
+    let (width, height, rgb_img, mask_img, dpi_x, dpi_y) = if is_svg {
         let (rgba, width, height) = rasterize_svg(&data)?;
         let (rgb, mask) = separate_rgb_and_alpha_from_rgba(&rgba);
-        (width, height, rgb, mask)
+        // SVG has no intrinsic DPI — resvg rasterizes at CSS px which the PDF
+        // spec treats as equivalent to points (1/72").
+        (
+            width,
+            height,
+            rgb,
+            mask,
+            DEFAULT_IMAGE_DPI,
+            DEFAULT_IMAGE_DPI,
+        )
     } else {
         let img = image::load_from_memory(&data)?;
         let (width, height) = img.dimensions();
         let (rgb, mask) = separate_rgb_and_alpha(img);
-        (width, height, rgb, mask)
+        let (dx, dy) = read_image_dpi(&data).unwrap_or((DEFAULT_IMAGE_DPI, DEFAULT_IMAGE_DPI));
+        (width, height, rgb, mask, dx, dy)
     };
+
+    // Size the PDF page in points so the embedded image is displayed at its
+    // native physical resolution. A 2400×3000 300-DPI scan becomes an
+    // 8"×10" (576×720 pt) page rather than a nonsensical 33"×42" one.
+    // The image XObject stays at full pixel resolution; only the CTM shrinks.
+    let page_width_pt = width as f32 * 72.0 / dpi_x;
+    let page_height_pt = height as f32 * 72.0 / dpi_y;
 
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
     encoder.write_all(&rgb_img)?;
@@ -554,9 +688,12 @@ pub async fn convert_image_to_pdf(
 
     let content_stream_object_id = 5;
     let content_stream_pos = pdf_data.len();
+    // The CTM scales the 1×1 unit-square image XObject to fill the page in
+    // point-space; MediaBox uses the same values, so together they preserve
+    // the source image's physical (DPI-aware) size.
     let content = format!(
-        "q\n{} 0 0 {} 0 0 cm\n/Im{} Do\nQ",
-        width, height, image_object_id
+        "q\n{:.4} 0 0 {:.4} 0 0 cm\n/Im{} Do\nQ",
+        page_width_pt, page_height_pt, image_object_id
     );
     writeln!(
         pdf_data,
@@ -570,8 +707,13 @@ pub async fn convert_image_to_pdf(
     let page_object_pos = pdf_data.len();
     writeln!(
         pdf_data,
-        "{} 0 obj\n<< /Type /Page /Parent 1 0 R /MediaBox [0 0 {} {}] /Contents {} 0 R /Resources << /XObject << /Im{} {} 0 R >> >> >>",
-        page_object_id, width, height, content_stream_object_id, image_object_id, image_object_id
+        "{} 0 obj\n<< /Type /Page /Parent 1 0 R /MediaBox [0 0 {:.4} {:.4}] /Contents {} 0 R /Resources << /XObject << /Im{} {} 0 R >> >> >>",
+        page_object_id,
+        page_width_pt,
+        page_height_pt,
+        content_stream_object_id,
+        image_object_id,
+        image_object_id
     )?;
     writeln!(pdf_data, "endobj")?;
 
@@ -741,6 +883,198 @@ mod tests {
             guess_extension_from_data(&build_zip(&["random/file.txt"])).as_deref(),
             Some("zip")
         );
+    }
+
+    /// Build a minimal in-memory PNG with an optional `pHYs` chunk. Uses the
+    /// `image` crate to encode a 1×1 pixel image, then splices the pHYs chunk
+    /// in *before* the IDAT chunk (per spec). Returns the resulting bytes.
+    fn make_png_with_phys(dpi_x: u32, dpi_y: u32, unit: u8) -> Vec<u8> {
+        // Encode a valid 1×1 PNG we can splice into.
+        let mut base = Vec::new();
+        {
+            let img = image::RgbImage::from_pixel(1, 1, image::Rgb([255, 255, 255]));
+            image::DynamicImage::ImageRgb8(img)
+                .write_to(
+                    &mut std::io::Cursor::new(&mut base),
+                    image::ImageFormat::Png,
+                )
+                .unwrap();
+        }
+        // Build the pHYs chunk: ppu_x, ppu_y (pixels/meter), unit
+        let ppu_x = (dpi_x as f32 / 0.0254) as u32;
+        let ppu_y = (dpi_y as f32 / 0.0254) as u32;
+        let mut payload = Vec::with_capacity(9);
+        payload.extend_from_slice(&ppu_x.to_be_bytes());
+        payload.extend_from_slice(&ppu_y.to_be_bytes());
+        payload.push(unit);
+        // CRC covers chunk type + data.
+        let mut crc_input = Vec::from(b"pHYs" as &[u8]);
+        crc_input.extend_from_slice(&payload);
+        let crc = crc32fast::hash(&crc_input);
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(b"pHYs");
+        chunk.extend_from_slice(&payload);
+        chunk.extend_from_slice(&crc.to_be_bytes());
+
+        // Find IDAT and insert pHYs before it.
+        let idat_pos = base
+            .windows(4)
+            .position(|w| w == b"IDAT")
+            .expect("png must have IDAT");
+        // The length field is 4 bytes before the chunk type.
+        let insert_at = idat_pos - 4;
+        let mut out = Vec::with_capacity(base.len() + chunk.len());
+        out.extend_from_slice(&base[..insert_at]);
+        out.extend_from_slice(&chunk);
+        out.extend_from_slice(&base[insert_at..]);
+        out
+    }
+
+    #[test]
+    fn test_read_png_dpi_meters_unit() {
+        let png = make_png_with_phys(300, 300, 1);
+        let (dx, dy) = read_image_dpi(&png).expect("should read 300 dpi");
+        assert!((dx - 300.0).abs() < 0.5, "dx={dx}");
+        assert!((dy - 300.0).abs() < 0.5, "dy={dy}");
+    }
+
+    #[test]
+    fn test_read_png_dpi_unspecified_unit_is_none() {
+        // Unit 0 = aspect ratio only, not convertible to DPI.
+        let png = make_png_with_phys(300, 300, 0);
+        assert!(read_image_dpi(&png).is_none());
+    }
+
+    #[test]
+    fn test_read_png_dpi_missing_phys_is_none() {
+        // Encode a plain PNG without any pHYs chunk.
+        let mut buf = Vec::new();
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([0, 0, 0]));
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        assert!(read_image_dpi(&buf).is_none());
+    }
+
+    /// Build a minimal JPEG with a JFIF APP0 marker declaring the given density.
+    /// The pixel data doesn't need to be valid — our parser stops at the APP0.
+    fn make_jpeg_with_jfif(units: u8, x_density: u16, y_density: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0xFF, 0xD8]); // SOI
+        out.extend_from_slice(&[0xFF, 0xE0]); // APP0 marker
+        out.extend_from_slice(&16u16.to_be_bytes()); // segment length
+        out.extend_from_slice(b"JFIF\0"); // identifier
+        out.extend_from_slice(&[0x01, 0x02]); // version 1.02
+        out.push(units); // density units
+        out.extend_from_slice(&x_density.to_be_bytes());
+        out.extend_from_slice(&y_density.to_be_bytes());
+        out.extend_from_slice(&[0, 0]); // thumbnail 0×0
+        out.extend_from_slice(&[0xFF, 0xD9]); // EOI
+        out
+    }
+
+    #[test]
+    fn test_read_jpeg_dpi_units_1() {
+        let jpg = make_jpeg_with_jfif(1, 300, 300);
+        let (dx, dy) = read_image_dpi(&jpg).expect("jfif DPI");
+        assert_eq!(dx, 300.0);
+        assert_eq!(dy, 300.0);
+    }
+
+    #[test]
+    fn test_read_jpeg_dpi_units_2_dpcm_to_dpi() {
+        // 118 dots/cm ≈ 300 DPI.
+        let jpg = make_jpeg_with_jfif(2, 118, 118);
+        let (dx, _) = read_image_dpi(&jpg).expect("jfif DPI");
+        assert!((dx - 118.0 * 2.54).abs() < 0.1, "dx={dx}");
+    }
+
+    #[test]
+    fn test_read_jpeg_dpi_units_0_is_none() {
+        let jpg = make_jpeg_with_jfif(0, 1, 1);
+        assert!(read_image_dpi(&jpg).is_none());
+    }
+
+    /// The whole point of the DPI-aware conversion: a 300-DPI source image
+    /// must produce a MediaBox in points that reflects its *physical* size
+    /// (pixels × 72 / dpi), not its pixel count. This is what matches
+    /// ImageMagick's behavior and prevents downstream render upscaling.
+    #[tokio::test]
+    async fn test_convert_image_to_pdf_uses_source_dpi_for_mediabox() {
+        // 600×300 px @ 300 DPI → expected MediaBox 144×72 pt (2"×1").
+        let png = make_png_with_phys(300, 300, 1);
+        // Overwrite the encoded 1×1 base image with a real 600×300 one so
+        // the reported pixel dimensions match what we want to test.
+        let img = image::RgbImage::from_pixel(600, 300, image::Rgb([255, 255, 255]));
+        let mut base = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut base),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        // Re-splice the pHYs from `png` (built above with 300 DPI) into the
+        // real-sized PNG.
+        let phys_start = png.windows(4).position(|w| w == b"pHYs").unwrap() - 4;
+        let phys_end = phys_start + 4 + 4 + 9 + 4; // len+type+payload+crc
+        let phys_chunk = &png[phys_start..phys_end];
+        let idat_pos = base.windows(4).position(|w| w == b"IDAT").unwrap() - 4;
+        let mut spliced = Vec::with_capacity(base.len() + phys_chunk.len());
+        spliced.extend_from_slice(&base[..idat_pos]);
+        spliced.extend_from_slice(phys_chunk);
+        spliced.extend_from_slice(&base[idat_pos..]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let in_path = dir.path().join("test.png");
+        tokio::fs::write(&in_path, &spliced).await.unwrap();
+
+        let pdf_path =
+            convert_image_to_pdf(in_path.to_str().unwrap(), dir.path().to_str().unwrap())
+                .await
+                .unwrap();
+        let pdf = tokio::fs::read(&pdf_path).await.unwrap();
+
+        // Expect MediaBox roughly "0 0 144 72" (allowing for fractional formatting).
+        let s = String::from_utf8_lossy(&pdf);
+        let re = regex::Regex::new(r"/MediaBox\s*\[\s*0\s+0\s+([0-9.]+)\s+([0-9.]+)\s*\]").unwrap();
+        let caps = re.captures(&s).expect("MediaBox present");
+        let w: f32 = caps[1].parse().unwrap();
+        let h: f32 = caps[2].parse().unwrap();
+        assert!((w - 144.0).abs() < 0.5, "expected ≈144 pt, got {w}");
+        assert!((h - 72.0).abs() < 0.5, "expected ≈72 pt, got {h}");
+    }
+
+    /// Regression guard for the pre-fix behavior: an image with no DPI
+    /// metadata must fall back to 72 DPI — so pixel count == point count,
+    /// matching ImageMagick's fallback and preserving the old, working case.
+    #[tokio::test]
+    async fn test_convert_image_to_pdf_no_dpi_falls_back_to_72() {
+        let mut base = Vec::new();
+        let img = image::RgbImage::from_pixel(200, 100, image::Rgb([255, 255, 255]));
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut base),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let in_path = dir.path().join("test.png");
+        tokio::fs::write(&in_path, &base).await.unwrap();
+
+        let pdf_path =
+            convert_image_to_pdf(in_path.to_str().unwrap(), dir.path().to_str().unwrap())
+                .await
+                .unwrap();
+        let pdf = tokio::fs::read(&pdf_path).await.unwrap();
+        let s = String::from_utf8_lossy(&pdf);
+        let re = regex::Regex::new(r"/MediaBox\s*\[\s*0\s+0\s+([0-9.]+)\s+([0-9.]+)\s*\]").unwrap();
+        let caps = re.captures(&s).expect("MediaBox present");
+        let w: f32 = caps[1].parse().unwrap();
+        let h: f32 = caps[2].parse().unwrap();
+        assert!((w - 200.0).abs() < 0.5, "expected 200 pt fallback, got {w}");
+        assert!((h - 100.0).abs() < 0.5, "expected 100 pt fallback, got {h}");
     }
 
     #[test]
