@@ -372,9 +372,8 @@ impl LiteParse {
 
         // Grid projection
         let mut parsed_pages = projection::project_pages_to_grid(pages);
-        // Attach per-page complexity signals (empty unless `include_complexity`).
-        // Projection is 1:1 with the input pages and preserves order, so a
-        // positional zip aligns each page with its own stats.
+
+        // Attach per-page complexity signals
         for (page, stats) in parsed_pages.iter_mut().zip(complexity) {
             page.complexity = Some(stats);
         }
