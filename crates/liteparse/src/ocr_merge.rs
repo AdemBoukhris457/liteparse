@@ -29,12 +29,11 @@ const MIN_COLUMN_ITEMS: usize = 8;
 
 /// ...and at least this fraction of the page's text items. Together with
 /// `MIN_COLUMN_ITEMS` this keeps thin sidebars, figure captions, and margin
-/// notes from flagging a page as multi-column. First-pass guess pending
-/// calibration against ParseBench's multi_column category.
+/// notes from flagging a page as multi-column.
 const MIN_COLUMN_ITEM_FRACTION: f32 = 0.15;
 
 /// Figure coverage at or above this fraction of the page area flags
-/// `DenseGraphics`. First-pass guess, same calibration caveat as above.
+/// `DenseGraphics`.
 const DENSE_GRAPHICS_MIN_COVERAGE: f32 = 0.2;
 
 /// Owned page bitmap prepared for OCR. Indices refer to positions in the `pages` slice.
@@ -296,17 +295,15 @@ pub struct LayoutComplexityStats {
     pub column_count: usize,
     /// Validated ruled-table runs on the page: grid components confirmed
     /// against the projected text, so a boxed callout or a chart's axis
-    /// gridlines don't count (raw grid detection fired on 94% of ParseBench's
-    /// chart docs; validation is what makes this a *table* signal).
+    /// gridlines — lines without cell structure — don't count.
     pub ruled_table_count: usize,
     /// Combined validated ruled-table area (text extent) over page area,
     /// clamped to 1.0.
     pub ruled_table_coverage: f32,
     /// Borderless table runs found by the emitter's track-alignment detector
-    /// over the projected lines (description lists excluded). Ruled tables can
-    /// appear here too — their text rows also align to tracks — so do not sum
-    /// this with `ruled_table_count`; the two discriminate "ruled" from
-    /// "borderless", they don't partition tables.
+    /// over the projected lines (description lists excluded). Ruled tables'
+    /// text rows also align to tracks, so this overlaps `ruled_table_count`
+    /// and must not be summed with it.
     pub text_table_run_count: usize,
     /// Figure regions clustered from vector graphics.
     pub figure_count: usize,

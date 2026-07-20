@@ -205,10 +205,8 @@ impl LiteParse {
             (pages, page_complexities)
         };
 
-        // Layout signals come from the projected page: the XY-cut region tree
-        // for columns, figure clusters and ruled-table rects for graphics and
-        // tables. Running real projection here (rather than approximating)
-        // keeps the signals identical to what a full parse will decide.
+        // Layout signals come from the real projection pass so they match
+        // what a full parse will decide.
         let t_layout = web_time::Instant::now();
         let parsed_pages = projection::project_pages_to_grid(pages);
         for (stats, page) in page_complexities.iter_mut().zip(&parsed_pages) {

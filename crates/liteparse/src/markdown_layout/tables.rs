@@ -1137,9 +1137,9 @@ pub(super) fn detect_tables(lines: &[ProjectedLine]) -> Vec<TableRun> {
 
 /// Count borderless table runs for the layout-complexity stats. Excludes
 /// description lists — a label/value pair block reads fine as text, so it
-/// should not flag the page as table-bearing. `GridFallback` runs DO count:
-/// tabular structure the emitter couldn't extract cleanly is the strongest
-/// possible "route this page to a better parser" signal.
+/// should not flag the page as table-bearing. `GridFallback` runs count:
+/// tabular structure the emitter couldn't extract cleanly still marks the
+/// page as table-bearing.
 pub(crate) fn count_text_table_runs(lines: &[ProjectedLine]) -> usize {
     detect_tables_impl(lines, false).len()
 }
